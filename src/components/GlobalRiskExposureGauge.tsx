@@ -276,6 +276,28 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
 
         {/* Detailed Risk Breakdown & Balances (7 Columns on Desktop) */}
         <div className="md:col-span-7 space-y-3">
+          {/* Capital Allocation & Protected Reserve Badge */}
+          {settings.enableCapitalLimit && (settings.maxAllocatedCapitalUsd ?? 0) > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-300">
+              <div className="flex items-center gap-1.5 font-medium">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>
+                  {isArabic
+                    ? `سقف البوت النشط: $${(settings.maxAllocatedCapitalUsd ?? 5).toFixed(2)} USDT`
+                    : `Active Bot Capital Cap: $${(settings.maxAllocatedCapitalUsd ?? 5).toFixed(2)} USDT`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 font-mono text-xs">
+                <span className="text-slate-400 text-[10px]">
+                  {isArabic ? 'الرصيد المحمي المحجوز:' : 'Protected Reserve:'}
+                </span>
+                <span className="text-cyan-300 font-bold bg-slate-950/80 px-2 py-0.5 rounded border border-cyan-500/30">
+                  ${Math.max(0, balance.totalWalletBalance - (settings.maxAllocatedCapitalUsd ?? 5)).toFixed(2)} USDT
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Comparative Progress Bar */}
           <div className="bg-slate-900/70 border border-slate-800/80 rounded-xl p-3">
             <div className="flex items-center justify-between text-xs mb-2">

@@ -56,15 +56,42 @@ export class BinanceService {
             aiRecommendedSignal = change >= 0 || rsi14 < 35 ? 'BUY_LONG' : 'SELL_SHORT';
           }
 
+          // Determine precision based on price magnitude for realistic Binance orders
+          let pricePrecision = 2;
+          let quantityPrecision = 3;
+          let minQty = 0.001;
+
+          if (price >= 1000) {
+            pricePrecision = 2;
+            quantityPrecision = 3;
+            minQty = 0.001;
+          } else if (price >= 10) {
+            pricePrecision = 3;
+            quantityPrecision = 2;
+            minQty = 0.01;
+          } else if (price >= 1) {
+            pricePrecision = 4;
+            quantityPrecision = 1;
+            minQty = 0.1;
+          } else if (price >= 0.01) {
+            pricePrecision = 5;
+            quantityPrecision = 0;
+            minQty = 1;
+          } else {
+            pricePrecision = 6;
+            quantityPrecision = 0;
+            minQty = 10;
+          }
+
           return {
             symbol: t.symbol,
             baseAsset: t.symbol.replace('USDT', ''),
             quoteAsset: 'USDT',
-            pricePrecision: 2,
-            quantityPrecision: 2,
-            minQty: 0.001,
-            stepSize: 0.001,
-            tickSize: 0.01,
+            pricePrecision,
+            quantityPrecision,
+            minQty,
+            stepSize: minQty,
+            tickSize: 1 / Math.pow(10, pricePrecision),
             minNotional: 5,
             price,
             priceChangePercent: change,

@@ -11,6 +11,7 @@ import {
   ToastAlert,
   TradeDirection,
   TradingMode,
+  WalletProfile,
 } from '../types/trading';
 import { BinanceService } from '../services/binanceService';
 import { aiEngine } from '../services/aiLearningEngine';
@@ -28,10 +29,20 @@ interface TradingContextType {
   toggleBot: () => void;
   credentials: BinanceCredentials;
   updateCredentials: (creds: Partial<BinanceCredentials>) => void;
-  validateCredentials: () => Promise<boolean>;
+  validateCredentials: (overrideCreds?: BinanceCredentials) => Promise<boolean>;
   isValidatingApi: boolean;
   apiStatus: 'disconnected' | 'connected' | 'error';
   apiErrorMessage: string;
+
+  // Multi-Wallet Profiles Management
+  wallets: WalletProfile[];
+  activeWalletId: string;
+  activeWallet: WalletProfile;
+  switchWallet: (walletId: string) => Promise<void>;
+  saveWalletProfile: (profile: Omit<WalletProfile, 'id' | 'createdAt'> & { id?: string }) => void;
+  deleteWalletProfile: (walletId: string) => void;
+  setCustomWalletName: (name: string) => void;
+
   settings: BotSettings;
   updateSettings: (newSettings: Partial<BotSettings>) => void;
   telegramSettings: TelegramSettings;
@@ -59,7 +70,16 @@ interface TradingContextType {
   clearAllToasts: () => void;
   
   // Actions
-  openPosition: (symbol: string, side: TradeDirection, rationale?: string, customLeverage?: number) => Promise<boolean>;
+  openPosition: (
+    symbol: string,
+    side: TradeDirection,
+    rationale?: string,
+    customLeverage?: number,
+    options?: {
+      overrideLimits?: boolean;
+      customAmountUsd?: number;
+    }
+  ) => Promise<boolean>;
   closePosition: (positionId: string, reason?: ClosedTrade['exitReason']) => Promise<boolean>;
   closeAllPositions: () => Promise<void>;
   refreshMarketData: () => Promise<void>;
@@ -152,29 +172,174 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const toggleBot = () => setBotRunning(!botRunning);
 
-  // 4. Binance Credentials
-  const [credentials, setCredentials] = useState<BinanceCredentials>(() => {
+  // 4. Multi-Wallet Profiles & Binance Credentials
+  const [wallets, setWallets] = useState<WalletProfile[]>(() => {
     try {
-      const saved = localStorage.getItem('apex_binance_creds');
-      return saved ? JSON.parse(saved) : DEFAULT_CREDENTIALS;
-    } catch {
-      return DEFAULT_CREDENTIALS;
+      const saved = localStorage.getItem('bavly_wallet_profiles');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      const legacyCreds = localStorage.getItem('apex_binance_creds');
+      if (legacyCreds) {
+        const parsed = JSON.parse(legacyCreds);
+        return [
+          {
+            id: 'wallet-default',
+            name: parsed.walletName || 'محفظة بافلي بينانس (Bavly Futures)',
+            apiKey: parsed.apiKey || '',
+            apiSecret: parsed.apiSecret || '',
+            isTestnet: !!parsed.isTestnet,
+            isValidated: !!parsed.isValidated,
+            createdAt: Date.now(),
+          },
+        ];
+      }
+    } catch (e) {
+      console.error('Error loading wallet profiles:', e);
     }
+    return [
+      {
+        id: 'wallet-default',
+        name: 'محفظة بافلي بينانس (Bavly Futures)',
+        apiKey: '',
+        apiSecret: '',
+        isTestnet: false,
+        isValidated: false,
+        createdAt: Date.now(),
+      },
+    ];
   });
+
+  const [activeWalletId, setActiveWalletId] = useState<string>(() => {
+    return localStorage.getItem('bavly_active_wallet_id') || 'wallet-default';
+  });
+
+  const activeWallet = wallets.find((w) => w.id === activeWalletId) || wallets[0] || {
+    id: 'wallet-default',
+    name: 'محفظة بافلي بينانس (Bavly Futures)',
+    apiKey: '',
+    apiSecret: '',
+    isTestnet: false,
+    isValidated: false,
+    createdAt: Date.now(),
+  };
+
+  const [credentials, setCredentials] = useState<BinanceCredentials>(() => ({
+    id: activeWallet.id,
+    walletName: activeWallet.name,
+    apiKey: activeWallet.apiKey,
+    apiSecret: activeWallet.apiSecret,
+    isTestnet: activeWallet.isTestnet,
+    isValidated: activeWallet.isValidated,
+  }));
 
   const [isValidatingApi, setIsValidatingApi] = useState(false);
   const [apiStatus, setApiStatus] = useState<'disconnected' | 'connected' | 'error'>(() => {
-    return credentials.isValidated ? 'connected' : 'disconnected';
+    return activeWallet.isValidated ? 'connected' : 'disconnected';
   });
   const [apiErrorMessage, setApiErrorMessage] = useState('');
 
   const updateCredentials = (creds: Partial<BinanceCredentials>) => {
     setCredentials((prev) => {
       const updated = { ...prev, ...creds, isValidated: false };
-      localStorage.setItem('apex_binance_creds', JSON.stringify(updated));
+      return updated;
+    });
+    setWallets((prev) => {
+      const updated = prev.map((w) =>
+        w.id === activeWalletId
+          ? {
+              ...w,
+              apiKey: creds.apiKey !== undefined ? creds.apiKey : w.apiKey,
+              apiSecret: creds.apiSecret !== undefined ? creds.apiSecret : w.apiSecret,
+              isTestnet: creds.isTestnet !== undefined ? creds.isTestnet : w.isTestnet,
+              name: creds.walletName !== undefined ? creds.walletName : w.name,
+              isValidated: false,
+            }
+          : w
+      );
+      localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
       return updated;
     });
     setApiStatus('disconnected');
+  };
+
+  const setCustomWalletName = (name: string) => {
+    const trimmed = name.trim() || 'محفظة بافلي بينانس (Bavly Futures)';
+    setWallets((prev) => {
+      const updated = prev.map((w) => (w.id === activeWalletId ? { ...w, name: trimmed } : w));
+      localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
+      return updated;
+    });
+    setCredentials((prev) => ({ ...prev, walletName: trimmed }));
+  };
+
+  const switchWallet = async (walletId: string) => {
+    const target = wallets.find((w) => w.id === walletId);
+    if (!target) return;
+    setActiveWalletId(walletId);
+    localStorage.setItem('bavly_active_wallet_id', walletId);
+    setCredentials({
+      id: target.id,
+      walletName: target.name,
+      apiKey: target.apiKey,
+      apiSecret: target.apiSecret,
+      isTestnet: target.isTestnet,
+      isValidated: target.isValidated,
+    });
+    setApiStatus(target.isValidated ? 'connected' : 'disconnected');
+    if (target.isValidated && target.apiKey && target.apiSecret) {
+      try {
+        const res = await BinanceService.fetchAccount({
+          apiKey: target.apiKey,
+          apiSecret: target.apiSecret,
+          isTestnet: target.isTestnet,
+          isValidated: true,
+        });
+        if (res.success && res.balance) {
+          setRealBalance(res.balance);
+        }
+      } catch (e) {
+        console.error('Failed to fetch new wallet balance:', e);
+      }
+    }
+  };
+
+  const saveWalletProfile = (profile: Omit<WalletProfile, 'id' | 'createdAt'> & { id?: string }) => {
+    setWallets((prev) => {
+      let updated: WalletProfile[];
+      if (profile.id) {
+        updated = prev.map((w) => (w.id === profile.id ? { ...w, ...profile } : w));
+      } else {
+        const newWallet: WalletProfile = {
+          id: `wallet-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          name: profile.name || `محفظة بينانس ${prev.length + 1}`,
+          apiKey: profile.apiKey,
+          apiSecret: profile.apiSecret,
+          isTestnet: !!profile.isTestnet,
+          isValidated: !!profile.isValidated,
+          createdAt: Date.now(),
+        };
+        updated = [...prev, newWallet];
+      }
+      localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const deleteWalletProfile = (walletId: string) => {
+    if (wallets.length <= 1) return;
+    setWallets((prev) => {
+      const updated = prev.filter((w) => w.id !== walletId);
+      localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
+      return updated;
+    });
+    if (activeWalletId === walletId) {
+      const remaining = wallets.filter((w) => w.id !== walletId);
+      if (remaining.length > 0) {
+        switchWallet(remaining[0].id);
+      }
+    }
   };
 
   // 5. Bot Settings
@@ -447,8 +612,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         };
 
   // Validate Binance Credentials
-  const validateCredentials = async (): Promise<boolean> => {
-    if (!credentials.apiKey || !credentials.apiSecret) {
+  const validateCredentials = async (overrideCreds?: BinanceCredentials): Promise<boolean> => {
+    const credsToTest = overrideCreds || credentials;
+    if (!credsToTest.apiKey || !credsToTest.apiSecret) {
       setApiStatus('disconnected');
       setApiErrorMessage(language === 'ar' ? 'يرجى إدخال مفتاح الـ API والرمز السري أولاً.' : 'Please enter API Key and Secret Key.');
       return false;
@@ -458,19 +624,36 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setApiErrorMessage('');
 
     try {
-      const res = await BinanceService.fetchAccount(credentials);
+      const res = await BinanceService.fetchAccount(credsToTest);
       if (res.success && res.balance) {
         setRealBalance(res.balance);
         setApiStatus('connected');
         setCredentials((prev) => {
-          const updated = { ...prev, isValidated: true };
+          const updated = { ...prev, ...credsToTest, isValidated: true };
           localStorage.setItem('apex_binance_creds', JSON.stringify(updated));
+          return updated;
+        });
+        setWallets((prevWallets) => {
+          const updated = prevWallets.map((w) =>
+            w.id === activeWalletId
+              ? {
+                  ...w,
+                  isValidated: true,
+                  apiKey: credsToTest.apiKey,
+                  apiSecret: credsToTest.apiSecret,
+                  isTestnet: credsToTest.isTestnet,
+                  name: credsToTest.walletName || w.name,
+                }
+              : w
+          );
+          localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
           return updated;
         });
         return true;
       } else {
         setApiStatus('error');
-        setApiErrorMessage(res.error || 'Failed to authenticate with Binance Futures.');
+        const errMsg = res.error || 'Failed to authenticate with Binance Futures.';
+        setApiErrorMessage(errMsg);
         return false;
       }
     } catch (err: any) {
@@ -512,30 +695,45 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     symbol: string,
     side: TradeDirection,
     rationale = 'AI High Probability Setup',
-    customLeverage?: number
+    customLeverage?: number,
+    options?: {
+      overrideLimits?: boolean;
+      customAmountUsd?: number;
+    }
   ): Promise<boolean> => {
     const currentPositions = positionsRef.current;
     const currentSettings = settingsRef.current;
+    const isOverride = !!options?.overrideLimits;
 
-    // Check max concurrent limit
-    if (currentPositions.length >= currentSettings.maxConcurrentPositions) {
+    // Check max concurrent limit (Bypassed if manual execution / deep analysis override)
+    if (!isOverride && currentPositions.length >= currentSettings.maxConcurrentPositions) {
       return false;
     }
 
-    // Check direction constraints
-    if (currentSettings.allowedDirection === 'LONG_ONLY' && side !== 'LONG') return false;
-    if (currentSettings.allowedDirection === 'SHORT_ONLY' && side !== 'SHORT') return false;
+    // Check direction constraints (Bypassed if manual execution / deep analysis override)
+    if (!isOverride) {
+      if (currentSettings.allowedDirection === 'LONG_ONLY' && side !== 'LONG') return false;
+      if (currentSettings.allowedDirection === 'SHORT_ONLY' && side !== 'SHORT') return false;
+    }
 
     // Check if pair is already open
     if (currentPositions.some((p) => p.symbol === symbol)) {
+      const isAr = languageRef.current === 'ar';
+      addToast({
+        type: 'INFO',
+        title: isAr ? 'الصفقة مفتوحة بالفعل' : 'Position Already Open',
+        message: isAr
+          ? `لديك صفقة نشطة بالفعل على زوج ${symbol}.`
+          : `You already have an active open position for ${symbol}.`,
+      });
       return false;
     }
 
     const lev = customLeverage || currentSettings.leverage;
-    let amountUsd = currentSettings.positionSizeUsd;
+    let amountUsd = options?.customAmountUsd || currentSettings.positionSizeUsd;
 
-    // Check Allocated Capital Limit (Wallet Reserve Protection)
-    if (currentSettings.enableCapitalLimit && (currentSettings.maxAllocatedCapitalUsd ?? 0) > 0) {
+    // Check Allocated Capital Limit (Wallet Reserve Protection) - Bypassed if manual execution / deep analysis override
+    if (!isOverride && currentSettings.enableCapitalLimit && (currentSettings.maxAllocatedCapitalUsd ?? 0) > 0) {
       const capLimit = currentSettings.maxAllocatedCapitalUsd!;
       const currentUsedMargin = currentPositions.reduce((acc, p) => acc + p.amountUsd, 0);
       const remainingBudget = Math.max(0, capLimit - currentUsedMargin);
@@ -562,7 +760,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const pairInfo = marketPairsRef.current.find((p) => p.symbol === symbol);
     const entryPrice = pairInfo?.price || (symbol.startsWith('BTC') ? 64000 : 150);
     const notionalValue = amountUsd * lev;
-    const quantity = parseFloat((notionalValue / entryPrice).toFixed(pairInfo?.quantityPrecision || 4));
+    const qtyPrecision = pairInfo?.quantityPrecision !== undefined ? pairInfo.quantityPrecision : 3;
+    let quantity = parseFloat((notionalValue / entryPrice).toFixed(qtyPrecision));
+
+    // Ensure quantity meets Binance minQty
+    const minQty = pairInfo?.minQty || 0.001;
+    if (quantity < minQty) {
+      quantity = minQty;
+    }
 
     // Target Prices: AI Dynamic Analysis or Manual Config
     let takeProfitPrice: number;
@@ -630,7 +835,19 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     // If Real Mode, execute real order on Binance Futures!
-    if (tradingModeRef.current === 'real' && credentialsRef.current.isValidated) {
+    if (tradingModeRef.current === 'real') {
+      if (!credentialsRef.current.isValidated || !credentialsRef.current.apiKey) {
+        const isAr = languageRef.current === 'ar';
+        addToast({
+          type: 'INFO',
+          title: isAr ? '⚠️ وضع التداول الحقيقي يتطلب ربط بينانس' : '⚠️ Real Mode Requires Binance API',
+          message: isAr
+            ? 'أنت في وضع التداول الحقيقي ولكن لم تقم بربط وتأكيد مفاتيح Binance API بعد. يرجى إدخالها من الإعدادات.'
+            : 'You are in Real Trading Mode, but Binance API credentials are not yet validated. Please configure them in Settings.',
+        });
+        return false;
+      }
+
       try {
         await BinanceService.setLeverage(credentialsRef.current, symbol, lev);
         const orderRes = await BinanceService.placeOrder(
@@ -640,11 +857,24 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           quantity
         );
         if (!orderRes.success) {
-          console.error('Binance order error:', orderRes.error);
+          const isAr = languageRef.current === 'ar';
+          addToast({
+            type: 'CLOSE_LOSS',
+            title: isAr ? '❌ فشل إرسال الأمر لمنصة بينانس' : '❌ Binance Order Rejected',
+            message: isAr
+              ? `رفضت باينانس أمر ${symbol}: ${orderRes.error || 'تأكد من تفعيل صلاحية تداول العقود الآجلة Futures في مفتاح API أو كفاية الرصيد'}`
+              : `Binance rejected ${symbol} order: ${orderRes.error || 'Ensure Futures Trading permission is enabled on your API key.'}`,
+          });
           return false;
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Real order execution failed:', err);
+        const isAr = languageRef.current === 'ar';
+        addToast({
+          type: 'CLOSE_LOSS',
+          title: isAr ? '❌ خطأ اتصال أثناء تنفيذ الأمر' : '❌ Network Error on Order Execution',
+          message: isAr ? (err.message || 'تعذر الاتصال بباينانس') : (err.message || 'Failed connecting to Binance'),
+        });
         return false;
       }
     }
@@ -653,17 +883,29 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     // Send Real-Time Toast Notification
     const isAr = languageRef.current === 'ar';
-    addToast({
-      type: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
-      title: isAr
-        ? `تم فتح صفقة ${side === 'LONG' ? 'شراء (LONG)' : 'بيع (SHORT)'}`
-        : `New ${side} Position Executed`,
-      message: isAr
-        ? `${symbol} • رافعة ${lev}x • حجم $${amountUsd} بسعر $${entryPrice.toLocaleString()} (ذكاء اصطناعي ${newPosition.aiConfidence}%)`
-        : `${symbol} • ${lev}x • $${amountUsd} @ $${entryPrice.toLocaleString()} (AI Confidence ${newPosition.aiConfidence}%)`,
-      symbol,
-      side,
-    });
+    if (isOverride) {
+      addToast({
+        type: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
+        title: isAr ? '⚡ تنفيذ مباشر استثنائي (تجاوز القيود)' : '⚡ Manual Priority Override Executed',
+        message: isAr
+          ? `تم تنفيذ صفقة ${symbol} فوراً بنجاح وتجاوز سقف الـ ${currentSettings.maxConcurrentPositions} صفقات وسقف رأس المال بطلبك المباشر!`
+          : `Executed ${symbol} instantly, bypassing max open positions (${currentSettings.maxConcurrentPositions}) & capital constraints upon your direct manual command!`,
+        symbol,
+        side,
+      });
+    } else {
+      addToast({
+        type: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
+        title: isAr
+          ? `تم فتح صفقة ${side === 'LONG' ? 'شراء (LONG)' : 'بيع (SHORT)'}`
+          : `New ${side} Position Executed`,
+        message: isAr
+          ? `${symbol} • رافعة ${lev}x • حجم $${amountUsd} بسعر $${entryPrice.toLocaleString()} (ذكاء اصطناعي ${newPosition.aiConfidence}%)`
+          : `${symbol} • ${lev}x • $${amountUsd} @ $${entryPrice.toLocaleString()} (AI Confidence ${newPosition.aiConfidence}%)`,
+        symbol,
+        side,
+      });
+    }
 
     // Send Telegram Notification
     TelegramService.notifyPositionOpened(telegramSettingsRef.current, newPosition, languageRef.current === 'ar');
@@ -1014,6 +1256,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isValidatingApi,
         apiStatus,
         apiErrorMessage,
+        wallets,
+        activeWalletId,
+        activeWallet,
+        switchWallet,
+        saveWalletProfile,
+        deleteWalletProfile,
+        setCustomWalletName,
         settings,
         updateSettings,
         telegramSettings,

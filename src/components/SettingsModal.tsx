@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTrading } from '../context/TradingContext';
 import {
   Bell,
+  Check,
   CheckCircle2,
   Clock,
   Key,
   Layers,
   Loader2,
   Percent,
+  Plus,
   Send,
   Shield,
   ShieldCheck,
@@ -15,6 +17,7 @@ import {
   Sparkles,
   Trash2,
   TrendingUp,
+  Wallet,
   X,
   Zap,
 } from 'lucide-react';
@@ -36,6 +39,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     isValidatingApi,
     apiStatus,
     apiErrorMessage,
+    wallets,
+    activeWallet,
+    activeWalletId,
+    switchWallet,
+    saveWalletProfile,
+    deleteWalletProfile,
+    setCustomWalletName,
     settings,
     updateSettings,
     telegramSettings,
@@ -48,10 +58,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const isArabic = language === 'ar';
   const [activeTab, setActiveTab] = useState<'strategy' | 'api' | 'notifications' | 'reset'>('strategy');
 
-  // Local state for credentials
+  // Local state for credentials & wallet profiles
+  const [walletName, setWalletName] = useState(activeWallet?.name || 'محفظة بافلي بينانس (Bavly Futures)');
   const [apiKey, setApiKey] = useState(credentials.apiKey);
   const [apiSecret, setApiSecret] = useState(credentials.apiSecret);
   const [isTestnet, setIsTestnet] = useState(credentials.isTestnet);
+
+  // New wallet profile creation modal state
+  const [isAddingNewWallet, setIsAddingNewWallet] = useState(false);
+  const [newWalletName, setNewWalletName] = useState('');
+  const [newWalletApiKey, setNewWalletApiKey] = useState('');
+  const [newWalletApiSecret, setNewWalletApiSecret] = useState('');
+  const [newWalletIsTestnet, setNewWalletIsTestnet] = useState(false);
+
+  useEffect(() => {
+    if (activeWallet) {
+      setWalletName(activeWallet.name);
+      setApiKey(activeWallet.apiKey);
+      setApiSecret(activeWallet.apiSecret);
+      setIsTestnet(activeWallet.isTestnet);
+    }
+  }, [activeWalletId]);
 
   // Local state for strategy
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentPositions);
@@ -87,11 +114,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   if (!isOpen) return null;
 
   const handleSaveApi = () => {
+    setCustomWalletName(walletName);
     updateCredentials({
+      walletName,
       apiKey,
       apiSecret,
       isTestnet,
     });
+    setShowSavedToast(true);
+    setTimeout(() => setShowSavedToast(false), 2500);
+  };
+
+  const handleAddNewWallet = () => {
+    if (!newWalletName.trim() || !newWalletApiKey.trim() || !newWalletApiSecret.trim()) {
+      return;
+    }
+    saveWalletProfile({
+      name: newWalletName.trim(),
+      apiKey: newWalletApiKey.trim(),
+      apiSecret: newWalletApiSecret.trim(),
+      isTestnet: newWalletIsTestnet,
+      isValidated: false,
+    });
+    setIsAddingNewWallet(false);
+    setNewWalletName('');
+    setNewWalletApiKey('');
+    setNewWalletApiSecret('');
+    setNewWalletIsTestnet(false);
     setShowSavedToast(true);
     setTimeout(() => setShowSavedToast(false), 2500);
   };
@@ -643,7 +692,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             </div>
           )}
 
-          {/* TAB 2: BINANCE API CREDENTIALS */}
+          {/* TAB 2: BINANCE API CREDENTIALS & MULTI-WALLET PROFILES */}
           {activeTab === 'api' && (
             <div className="space-y-4">
               <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed">
@@ -651,43 +700,232 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 {t.apiNote}
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-200 mb-1">
-                  {t.apiKeyLabel}
-                </label>
-                <input
-                  type="text"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Paste your Binance Futures API Key here..."
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                />
+              {/* SECTION: MULTI-WALLET PROFILES MANAGER */}
+              <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Wallet className="w-4 h-4 text-amber-400" />
+                    <span className="font-bold text-white text-xs">
+                      {language === 'ar' ? 'إدارة محافظ بينانس وتخصيص الاسم' : 'Binance Wallet Profiles'}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => setIsAddingNewWallet(!isAddingNewWallet)}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[11px] font-bold transition flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>{language === 'ar' ? 'إضافة محفظة ثانية' : 'Add Another Wallet'}</span>
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  {language === 'ar'
+                    ? 'يمكنك ربط وتسمية أكثر من محفظة من باينانس (مثل: محفظة بافلي الأساسية، محفظة السكالبينج). سيظهر الاسم المخصص في الشريط العلوي بجانب علامة باينانس.'
+                    : 'Manage multiple Binance wallets. Custom names appear at the top header alongside the Binance badge.'}
+                </p>
+
+                {/* Wallets List / Switcher */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  {wallets.map((w) => {
+                    const isActive = w.id === activeWalletId;
+                    return (
+                      <div
+                        key={w.id}
+                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition ${
+                          isActive
+                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-200 shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              isActive ? 'bg-amber-400 ring-2 ring-amber-400/30' : 'bg-slate-600'
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate">{w.name}</div>
+                            <div className="text-[10px] text-slate-400 flex items-center gap-1 font-mono">
+                              <span>Binance</span>
+                              {w.isTestnet && <span className="text-amber-400">(Testnet)</span>}
+                              {w.isValidated ? (
+                                <span className="text-emerald-400">✓ {language === 'ar' ? 'متصل' : 'Connected'}</span>
+                              ) : (
+                                <span className="text-slate-500">○ {language === 'ar' ? 'غير متصل' : 'Offline'}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!isActive && (
+                            <button
+                              onClick={() => switchWallet(w.id)}
+                              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-200 transition"
+                            >
+                              {language === 'ar' ? 'تفعيل' : 'Switch'}
+                            </button>
+                          )}
+                          {wallets.length > 1 && (
+                            <button
+                              onClick={() => deleteWalletProfile(w.id)}
+                              className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                              title="Delete Wallet"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Form to add a new wallet */}
+                {isAddingNewWallet && (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-amber-500/30 space-y-2.5 mt-2 animate-fadeIn">
+                    <div className="font-bold text-xs text-amber-300 flex items-center gap-1">
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{language === 'ar' ? 'إضافة محفظة باينانس جديدة:' : 'Add New Binance Wallet:'}</span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-slate-300 mb-1">
+                        {language === 'ar' ? 'اسم المحفظة (مثلاً: محفظة التداول السريع):' : 'Wallet Name:'}
+                      </label>
+                      <input
+                        type="text"
+                        value={newWalletName}
+                        onChange={(e) => setNewWalletName(e.target.value)}
+                        placeholder="e.g. My Second Binance Account"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-slate-300 mb-1">API Key:</label>
+                      <input
+                        type="text"
+                        value={newWalletApiKey}
+                        onChange={(e) => setNewWalletApiKey(e.target.value)}
+                        placeholder="Binance Futures API Key"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-slate-300 mb-1">API Secret:</label>
+                      <input
+                        type="password"
+                        value={newWalletApiSecret}
+                        onChange={(e) => setNewWalletApiSecret(e.target.value)}
+                        placeholder="Binance Futures Secret Key"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="new-testnet-check"
+                        checked={newWalletIsTestnet}
+                        onChange={(e) => setNewWalletIsTestnet(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-amber-500 rounded"
+                      />
+                      <label htmlFor="new-testnet-check" className="text-[11px] text-slate-300">
+                        {t.isTestnetLabel}
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={handleAddNewWallet}
+                        disabled={!newWalletName.trim() || !newWalletApiKey.trim() || !newWalletApiSecret.trim()}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs transition disabled:opacity-40"
+                      >
+                        {language === 'ar' ? 'حفظ وإضافة المحفظة' : 'Save & Add Wallet'}
+                      </button>
+                      <button
+                        onClick={() => setIsAddingNewWallet(false)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
+                      >
+                        {language === 'ar' ? 'إلغاء' : 'Cancel'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-200 mb-1">
-                  {t.apiSecretLabel}
-                </label>
-                <input
-                  type="password"
-                  value={apiSecret}
-                  onChange={(e) => setApiSecret(e.target.value)}
-                  placeholder="Paste your Binance Secret Key here..."
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                />
-              </div>
+              {/* CURRENT ACTIVE WALLET CONFIGURATION */}
+              <div className="space-y-3 pt-1">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-semibold text-slate-200">
+                      {language === 'ar' ? 'اسم المحفظة المخصص (يظهر في الأعلى):' : 'Custom Wallet Display Name:'}
+                    </label>
+                    <span className="text-[10px] text-amber-400 font-medium">
+                      {language === 'ar' ? 'يظهر بجانب باينانس' : 'Displayed next to Binance badge'}
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    value={walletName}
+                    onChange={(e) => setWalletName(e.target.value)}
+                    placeholder="مثال: محفظة بافلي الأساسية"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-amber-400"
+                  />
+                  {/* Visual Preview */}
+                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-400 bg-slate-950/60 p-2 rounded-lg border border-slate-800/80">
+                    <span>{language === 'ar' ? 'معاينة في الشريط العلوي:' : 'Top Bar Preview:'}</span>
+                    <span className="inline-flex items-center gap-1 font-bold text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                      <Wallet className="w-3 h-3 text-amber-400" />
+                      <span>{walletName || (language === 'ar' ? 'محفظة بافلي' : 'Bavly Wallet')}</span>
+                      <span className="text-[9px] bg-amber-400/20 text-amber-300 px-1 rounded">
+                        {language === 'ar' ? 'من باينانس' : 'Binance'}
+                      </span>
+                    </span>
+                  </div>
+                </div>
 
-              <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <input
-                  type="checkbox"
-                  id="testnet-check"
-                  checked={isTestnet}
-                  onChange={(e) => setIsTestnet(e.target.checked)}
-                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
-                />
-                <label htmlFor="testnet-check" className="text-slate-300 cursor-pointer">
-                  {t.isTestnetLabel}
-                </label>
+                <div>
+                  <label className="block font-semibold text-slate-200 mb-1">
+                    {t.apiKeyLabel}
+                  </label>
+                  <input
+                    type="text"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Paste your Binance Futures API Key here..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-200 mb-1">
+                    {t.apiSecretLabel}
+                  </label>
+                  <input
+                    type="password"
+                    value={apiSecret}
+                    onChange={(e) => setApiSecret(e.target.value)}
+                    placeholder="Paste your Binance Secret Key here..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                  <input
+                    type="checkbox"
+                    id="testnet-check"
+                    checked={isTestnet}
+                    onChange={(e) => setIsTestnet(e.target.checked)}
+                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                  />
+                  <label htmlFor="testnet-check" className="text-slate-300 cursor-pointer text-xs">
+                    {t.isTestnetLabel}
+                  </label>
+                </div>
               </div>
 
               {/* Status / Error feedback */}
@@ -712,16 +950,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   onClick={handleSaveApi}
                   className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition"
                 >
-                  {language === 'ar' ? 'حفظ المفاتيح' : 'Save Keys'}
+                  {language === 'ar' ? 'حفظ المحفظة والمفاتيح' : 'Save Wallet & Keys'}
                 </button>
 
                 <button
                   onClick={async () => {
                     handleSaveApi();
-                    await validateCredentials();
+                    await validateCredentials({
+                      id: activeWalletId,
+                      walletName,
+                      apiKey: apiKey.trim(),
+                      apiSecret: apiSecret.trim(),
+                      isTestnet,
+                      isValidated: false,
+                    });
                   }}
-                  disabled={isValidatingApi || !apiKey || !apiSecret}
-                  className="py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10 disabled:opacity-40"
+                  disabled={isValidatingApi || !apiKey.trim() || !apiSecret.trim()}
+                  className="py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10 disabled:opacity-40 cursor-pointer"
                 >
                   {isValidatingApi ? (
                     <>

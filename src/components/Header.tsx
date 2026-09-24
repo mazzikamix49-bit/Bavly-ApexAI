@@ -3,6 +3,7 @@ import { useTrading } from '../context/TradingContext';
 import {
   Activity,
   Bot,
+  Check,
   Globe,
   Pause,
   Play,
@@ -30,6 +31,10 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
     apiStatus,
     credentials,
     settings,
+    wallets,
+    activeWallet,
+    switchWallet,
+    activeWalletId,
   } = useTrading();
 
   const isArabic = language === 'ar';
@@ -138,6 +143,57 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
                   <span className="w-1.5 h-1.5 rounded-full bg-black"></span>
                 )}
               </button>
+            </div>
+
+            {/* Custom Binance Wallet Profile Badge */}
+            <div className="relative group">
+              <button
+                onClick={onOpenSettings}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20 transition-all shadow-sm"
+                title={language === 'ar' ? 'إدارة وتخصيص محافظ باينانس' : 'Manage Binance Wallets'}
+              >
+                <Wallet className="w-3.5 h-3.5 text-amber-400" />
+                <span className="font-bold max-w-[120px] truncate">
+                  {activeWallet?.name || (language === 'ar' ? 'محفظة بافلي' : 'Bavly Wallet')}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30 font-semibold">
+                  {language === 'ar' ? 'من باينانس' : 'Binance'}
+                </span>
+                {wallets.length > 1 && (
+                  <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 rounded-full font-mono">
+                    {wallets.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Quick switch dropdown if multiple wallets exist */}
+              {wallets.length > 1 && (
+                <div className="absolute left-0 mt-1 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1 z-50 hidden group-hover:block transition-all">
+                  <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    {language === 'ar' ? 'تبديل محفظة باينانس:' : 'Switch Binance Wallet:'}
+                  </div>
+                  {wallets.map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => switchWallet(w.id)}
+                      className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between transition ${
+                        w.id === activeWalletId
+                          ? 'bg-amber-500/20 text-amber-300 font-bold'
+                          : 'text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className="truncate">{w.name}</span>
+                      {w.id === activeWalletId && <Check className="w-3.5 h-3.5 text-amber-400" />}
+                    </button>
+                  ))}
+                  <button
+                    onClick={onOpenSettings}
+                    className="w-full text-center mt-1 pt-1 border-t border-slate-800 text-[11px] text-amber-400 hover:underline py-1"
+                  >
+                    {language === 'ar' ? '+ إضافة / تعديل المحافظ' : '+ Manage Wallets'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Binance API Connection Status */}

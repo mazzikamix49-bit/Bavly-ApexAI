@@ -2,7 +2,19 @@ export type TradeDirection = 'LONG' | 'SHORT';
 export type AllowedDirection = 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY';
 export type TradingMode = 'real' | 'paper';
 
+export interface WalletProfile {
+  id: string;
+  name: string;
+  apiKey: string;
+  apiSecret: string;
+  isTestnet: boolean;
+  isValidated: boolean;
+  createdAt: number;
+}
+
 export interface BinanceCredentials {
+  id?: string;
+  walletName?: string;
   apiKey: string;
   apiSecret: string;
   isTestnet: boolean;

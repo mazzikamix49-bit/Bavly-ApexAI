@@ -14,6 +14,7 @@ import {
   TrendingDown,
   TrendingUp,
   Zap,
+  ShieldAlert,
 } from 'lucide-react';
 import { FuturesSymbolInfo, TradeDirection } from '../types/trading';
 
@@ -55,14 +56,23 @@ export const MarketScannerTab: React.FC = () => {
     }
   }, [marketPairs, searchTerm, filterType]);
 
-  const handleQuickTrade = async (pair: FuturesSymbolInfo, side: TradeDirection) => {
+  const handleQuickTrade = async (
+    pair: FuturesSymbolInfo,
+    side: TradeDirection,
+    overrideLimits = false,
+    customLeverage?: number
+  ) => {
     setExecutingSymbol(pair.symbol);
     const rationale =
       language === 'ar'
-        ? `دخول يدوي سريع بناءً على توصية الذكاء الاصطناعي (ثقة ${pair.aiScore}%): RSI عند ${pair.rsi14}.`
+        ? overrideLimits
+          ? `⚡ تنفيذ فوري استثنائي بناءً على تقرير الذكاء الاصطناعي (ثقة ${pair.aiScore}%): تجاوز سقف الصفقات ورأس المال بطلبك المباشر.`
+          : `دخول يدوي سريع بناءً على توصية الذكاء الاصطناعي (ثقة ${pair.aiScore}%): RSI عند ${pair.rsi14}.`
+        : overrideLimits
+        ? `⚡ Direct Priority Override: Executed from AI Deep Analysis, bypassing concurrent & capital limits.`
         : `Manual 1-click execution: AI confidence ${pair.aiScore}%, RSI ${pair.rsi14}.`;
 
-    await openPosition(pair.symbol, side, rationale);
+    await openPosition(pair.symbol, side, rationale, customLeverage, { overrideLimits });
     setExecutingSymbol(null);
   };
 
@@ -223,18 +233,30 @@ export const MarketScannerTab: React.FC = () => {
             <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
               Rec Leverage: {aiDeepAnalysis.recommendedLeverage}x
             </span>
-            <button
-              onClick={() =>
-                handleQuickTrade(
-                  marketPairs.find((p) => p.symbol === aiDeepAnalysis.symbol)!,
-                  aiDeepAnalysis.signal === 'SELL_SHORT' ? 'SHORT' : 'LONG'
-                )
-              }
-              className="ml-auto px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold transition flex items-center gap-1"
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>{language === 'ar' ? 'تنفيذ التوصية فوراً' : 'Execute AI Signal Now'}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 ml-auto">
+              <span className="inline-flex items-center gap-1 text-[11px] text-amber-300 font-sans bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/30">
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                <span>{language === 'ar' ? 'تجاوز تلقائي للقيود وسقف الصفقات' : 'Bypasses Max Limit & Capital Caps'}</span>
+              </span>
+
+              <button
+                onClick={() => {
+                  const targetPair = marketPairs.find((p) => p.symbol === aiDeepAnalysis.symbol);
+                  if (targetPair) {
+                    handleQuickTrade(
+                      targetPair,
+                      aiDeepAnalysis.signal === 'SELL_SHORT' ? 'SHORT' : 'LONG',
+                      true, // overrideLimits = true!
+                      aiDeepAnalysis.recommendedLeverage
+                    );
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 active:scale-95 cursor-pointer"
+              >
+                <Zap className="w-3.5 h-3.5 fill-black" />
+                <span>{language === 'ar' ? 'تنفيذ التوصية فوراً (تجاوز القيود)' : 'Execute AI Signal Now (Bypass Limits)'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -355,7 +377,7 @@ export const MarketScannerTab: React.FC = () => {
               {/* Action Buttons */}
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => handleQuickTrade(pair, 'LONG')}
+                  onClick={() => handleQuickTrade(pair, 'LONG', true)}
                   disabled={isBusy || alreadyOpen}
                   className="py-1.5 px-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 font-bold text-xs transition flex items-center justify-center gap-1 disabled:opacity-40"
                 >
@@ -363,7 +385,7 @@ export const MarketScannerTab: React.FC = () => {
                   <span>LONG</span>
                 </button>
                 <button
-                  onClick={() => handleQuickTrade(pair, 'SHORT')}
+                  onClick={() => handleQuickTrade(pair, 'SHORT', true)}
                   disabled={isBusy || alreadyOpen}
                   className="py-1.5 px-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 font-bold text-xs transition flex items-center justify-center gap-1 disabled:opacity-40"
                 >
