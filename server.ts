@@ -117,7 +117,18 @@ app.get('/api/binance/ticker24hr', async (req: Request, res: Response) => {
   const baseUrl = getBinanceBaseUrl(isTestnet);
   try {
     const url = symbol ? `${baseUrl}/fapi/v1/ticker/24hr?symbol=${symbol}` : `${baseUrl}/fapi/v1/ticker/24hr`;
-    const response = await fetch(url);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'application/json',
+      },
+    });
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
       throw new Error(`Binance responded with ${response.status}`);
     }

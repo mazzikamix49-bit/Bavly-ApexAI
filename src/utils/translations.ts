@@ -24,6 +24,12 @@ export const translations = {
     apiConnected: 'متصل مع بينانس',
     apiDisconnected: 'غير متصل (مفاتيح API مطلوبة)',
     testnetBadge: 'شبكة تجريبية Testnet',
+    wsLiveStream: 'أسعار بينانس اللحظية',
+    wsConnecting: 'جاري الاتصال بالبث المباشر...',
+    wsReconnecting: 'إعادة الاتصال بالبث...',
+    wsDisconnected: 'انقطع البث المباشر',
+    wsError: 'خطأ في الاتصال بالبث',
+    wsReconnectBtn: 'إعادة الاتصال',
 
     // Dashboard Metrics
     metricsTitle: 'مؤشرات الأداء اللحظية',
@@ -210,6 +216,12 @@ export const translations = {
     apiConnected: 'Connected to Binance',
     apiDisconnected: 'Disconnected (API Keys Required)',
     testnetBadge: 'Binance Testnet',
+    wsLiveStream: 'Binance Live Stream',
+    wsConnecting: 'Connecting to Stream...',
+    wsReconnecting: 'Reconnecting Stream...',
+    wsDisconnected: 'Stream Disconnected',
+    wsError: 'Stream Error',
+    wsReconnectBtn: 'Reconnect Stream',
 
     // Dashboard Metrics
     metricsTitle: 'Live Performance Metrics',

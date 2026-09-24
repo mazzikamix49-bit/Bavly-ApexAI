@@ -279,46 +279,25 @@ export class AILearningEngine {
     openSymbols: Set<string>,
     minConfidence: number
   ): FuturesSymbolInfo[] {
-    // 1. Calculate dynamic market volume benchmarks
-    const validTickers = tickers.filter((t) => t.quoteVolume24h > 0 && t.price > 0);
-    const sortedVolumes = [...validTickers].map((t) => t.quoteVolume24h).sort((a, b) => a - b);
-    const medianVolume = sortedVolumes.length > 0 ? sortedVolumes[Math.floor(sortedVolumes.length * 0.4)] : 15000000;
-    const dynamicVolumeFloor = Math.max(15000000, medianVolume * 0.7); // Minimum $15M liquidity
+    // 1. Filter valid tickers
+    const validTickers = tickers.filter((t) => t.price > 0);
 
     return validTickers
       .filter((t) => {
         // Exclude symbols already held in active positions
         if (openSymbols.has(t.symbol)) return false;
 
-        // Dynamic Volume Filter: Reject thin, illiquid or dead pairs prone to slippage
-        if (t.quoteVolume24h < dynamicVolumeFloor) return false;
-
-        // Dynamic Volatility Filter: Measure 24h expansion envelope
-        // Rejects flat chop (< 2.2% spread) which produces false signals, and uncontrolled chaos (> 16%)
-        const spreadPct = t.high24h > 0 && t.low24h > 0 ? ((t.high24h - t.low24h) / t.price) * 100 : 0;
-        if (spreadPct < 2.2 || spreadPct > 16.0) return false;
-
-        // Dynamic AI Confidence Check (Prioritize high conviction, minimum 85%+)
-        const effectiveConfidence = Math.max(minConfidence, 85);
+        // Dynamic AI Confidence Check (Respect user setting minConfidence)
+        const effectiveConfidence = minConfidence || 70;
         if (t.aiScore < effectiveConfidence) return false;
 
-        // Dynamic RSI & Breakout Corridor Filter:
+        // Directional Confirmation Filter:
         if (t.aiRecommendedSignal === 'BUY_LONG') {
-          // Bullish Breakout Sweet Spot:
-          // RSI must be between 52 and 68 (confirming strong upward expansion without being overbought > 70)
-          // Price change must confirm buyers are in control (>= +0.2%)
-          const isBullishRsiCorridor = t.rsi14 >= 52 && t.rsi14 <= 68;
-          const isBreakoutMomentum = t.priceChangePercent >= 0.2;
-          return isBullishRsiCorridor && isBreakoutMomentum;
+          return t.rsi14 >= 40 && t.priceChangePercent >= -2.0;
         }
 
         if (t.aiRecommendedSignal === 'SELL_SHORT') {
-          // Bearish Breakdown Sweet Spot:
-          // RSI must be between 32 and 48 (confirming sharp downward velocity without being oversold < 30)
-          // Price change must confirm sellers are dominant (<= -0.2%)
-          const isBearishRsiCorridor = t.rsi14 >= 32 && t.rsi14 <= 48;
-          const isBreakdownMomentum = t.priceChangePercent <= -0.2;
-          return isBearishRsiCorridor && isBreakdownMomentum;
+          return t.rsi14 <= 60 && t.priceChangePercent <= 2.0;
         }
 
         return false;

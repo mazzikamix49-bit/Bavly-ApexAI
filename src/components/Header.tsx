@@ -7,10 +7,13 @@ import {
   Globe,
   Pause,
   Play,
+  RefreshCw,
   Settings,
   ShieldCheck,
   TrendingUp,
   Wallet,
+  Wifi,
+  WifiOff,
   Zap,
 } from 'lucide-react';
 
@@ -35,6 +38,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
     activeWallet,
     switchWallet,
     activeWalletId,
+    wsStatus,
+    wsStatusDetails,
+    reconnectWs,
   } = useTrading();
 
   const isArabic = language === 'ar';
@@ -193,6 +199,45 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
                     {language === 'ar' ? '+ إضافة / تعديل المحافظ' : '+ Manage Wallets'}
                   </button>
                 </div>
+              )}
+            </div>
+
+            {/* Real-time Binance WebSocket Stream Status Indicator */}
+            <div
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                wsStatus === 'connected'
+                  ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                  : wsStatus === 'connecting' || wsStatus === 'reconnecting'
+                  ? 'bg-amber-950/40 border-amber-500/30 text-amber-300'
+                  : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+              }`}
+              title={wsStatusDetails || 'WebSocket Stream'}
+            >
+              {wsStatus === 'connected' ? (
+                <Wifi className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+              ) : wsStatus === 'connecting' || wsStatus === 'reconnecting' ? (
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+              ) : (
+                <WifiOff className="w-3.5 h-3.5 text-rose-400" />
+              )}
+              <span className="hidden lg:inline font-mono">
+                {wsStatus === 'connected'
+                  ? t.wsLiveStream
+                  : wsStatus === 'reconnecting'
+                  ? t.wsReconnecting
+                  : wsStatus === 'connecting'
+                  ? t.wsConnecting
+                  : t.wsDisconnected}
+              </span>
+              {wsStatus !== 'connected' && (
+                <button
+                  onClick={reconnectWs}
+                  className="px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[10px] font-bold border border-amber-500/40 transition flex items-center gap-1"
+                  title={t.wsReconnectBtn}
+                >
+                  <RefreshCw className="w-2.5 h-2.5" />
+                  <span>{isArabic ? 'إعادة وصل' : 'Reconnect'}</span>
+                </button>
               )}
             </div>
 

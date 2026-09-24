@@ -4,8 +4,13 @@ export class BinanceService {
   static async ping(isTestnet = false): Promise<{ success: boolean; latency?: number; error?: string }> {
     try {
       const res = await fetch(`/api/binance/ping?testnet=${isTestnet}`);
-      const data = await res.json();
-      return data;
+      if (res.ok) {
+        return await res.json();
+      }
+      // Direct ping fallback
+      const base = isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+      const direct = await fetch(`${base}/fapi/v1/ping`);
+      return { success: direct.ok };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -14,7 +19,12 @@ export class BinanceService {
   static async fetchExchangeInfo(isTestnet = false) {
     try {
       const res = await fetch(`/api/binance/exchangeInfo?testnet=${isTestnet}`);
-      return await res.json();
+      if (res.ok) {
+        return await res.json();
+      }
+      const base = isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+      const direct = await fetch(`${base}/fapi/v1/exchangeInfo`);
+      return await direct.json();
     } catch (err: any) {
       console.error('Failed to fetch exchange info:', err);
       return { success: false, symbols: [] };
@@ -22,16 +32,58 @@ export class BinanceService {
   }
 
   static async fetch24hrTickers(isTestnet = false): Promise<FuturesSymbolInfo[]> {
+    let raw: any = null;
+    console.log(`[Binance API] Initializing fetch24hrTickers (Testnet: ${isTestnet})...`);
+
+    // 1. First Priority: Direct client-side fetch to Binance Futures Public API (0-latency real-time data)
     try {
-      const res = await fetch(`/api/binance/ticker24hr?testnet=${isTestnet}`);
-      if (!res.ok) throw new Error('Failed to fetch tickers');
-      const raw = await res.json();
+      const directBase = isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+      console.log(`[Binance API] Attempting direct fetch from ${directBase}/fapi/v1/ticker/24hr...`);
+      const directRes = await fetch(`${directBase}/fapi/v1/ticker/24hr`, {
+        headers: { Accept: 'application/json' },
+      });
+      if (directRes.ok) {
+        const directData = await directRes.json();
+        if (Array.isArray(directData) && directData.length > 0) {
+          raw = directData;
+          console.log(`[Binance API] Direct Binance fetch SUCCESS: Received ${raw.length} raw market tickers.`);
+        }
+      } else {
+        console.warn(`[Binance API] Direct fetch returned status ${directRes.status}`);
+      }
+    } catch (directErr) {
+      console.warn('[Binance API] Direct Binance fetch failed or blocked by CORS:', directErr);
+    }
 
-      if (!Array.isArray(raw)) return [];
+    // 2. Second Priority: Vercel / Express Backend Proxy (/api/binance/ticker24hr)
+    if (!Array.isArray(raw) || raw.length === 0) {
+      try {
+        console.log('[Binance API] Attempting backend proxy fetch: /api/binance/ticker24hr...');
+        const res = await fetch(`/api/binance/ticker24hr?testnet=${isTestnet}`);
+        if (res.ok) {
+          const text = await res.text();
+          if (text && text.trim().startsWith('[')) {
+            raw = JSON.parse(text);
+            console.log(`[Binance API] Backend proxy fetch SUCCESS: Received ${raw.length} raw market tickers.`);
+          }
+        } else {
+          console.warn(`[Binance API] Backend proxy returned status ${res.status}`);
+        }
+      } catch (proxyErr) {
+        console.error('[Binance API] Backend proxy fetch failed:', proxyErr);
+      }
+    }
 
-      // Filter only USDT pairs and transform
+    // If both failed, return empty array - NO fake or static pre-saved pairs!
+    if (!Array.isArray(raw) || raw.length === 0) {
+      console.warn('[Binance API] No real-time tickers received from Binance. Returning empty array (awaiting real-time WebSocket or next polling tick).');
+      return [];
+    }
+
+    try {
+      // Filter all active USDT contracts on Binance Futures
       const usdtPairs = raw
-        .filter((t: any) => t.symbol.endsWith('USDT'))
+        .filter((t: any) => t && t.symbol && t.symbol.endsWith('USDT'))
         .map((t: any) => {
           const price = parseFloat(t.lastPrice || '0');
           const change = parseFloat(t.priceChangePercent || '0');
@@ -107,9 +159,10 @@ export class BinanceService {
           };
         });
 
+      console.log(`[Binance API] Processed ${usdtPairs.length} genuine Binance Futures USDT contracts.`);
       return usdtPairs;
     } catch (err) {
-      console.error('Error fetching 24hr tickers:', err);
+      console.error('[Binance API] Error transforming 24hr tickers:', err);
       return [];
     }
   }

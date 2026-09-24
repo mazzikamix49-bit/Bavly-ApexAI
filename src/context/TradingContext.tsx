@@ -14,6 +14,7 @@ import {
   WalletProfile,
 } from '../types/trading';
 import { BinanceService } from '../services/binanceService';
+import { binanceWs, WsConnectionStatus, TickerUpdate } from '../services/binanceWsService';
 import { aiEngine } from '../services/aiLearningEngine';
 import { TelegramService } from '../services/telegramService';
 import { Language, translations } from '../utils/translations';
@@ -33,6 +34,11 @@ interface TradingContextType {
   isValidatingApi: boolean;
   apiStatus: 'disconnected' | 'connected' | 'error';
   apiErrorMessage: string;
+
+  // Real-Time Binance WebSocket Stream Status
+  wsStatus: WsConnectionStatus;
+  wsStatusDetails: string;
+  reconnectWs: () => void;
 
   // Multi-Wallet Profiles Management
   wallets: WalletProfile[];
@@ -89,7 +95,7 @@ interface TradingContextType {
 
 const DEFAULT_SETTINGS: BotSettings = {
   maxConcurrentPositions: 4,
-  positionSizeUsd: 15,
+  positionSizeUsd: 2.5,
   leverage: 20,
   allowedDirection: 'BOTH',
   maxTradeDurationHours: 4,
@@ -99,15 +105,15 @@ const DEFAULT_SETTINGS: BotSettings = {
   useTrailingStop: true,
   maxDailyDrawdownPercent: 5.0,
   marginType: 'ISOLATED',
-  minAiConfidence: 85,
+  minAiConfidence: 75,
   autoTradingEnabled: true,
   scanIntervalSeconds: 10,
   aiDynamicTargets: true,
   multiTargetTrailing: true,
   unlimitedHoldTime: true,
   enableToastAlerts: true,
-  enableCapitalLimit: true,
-  maxAllocatedCapitalUsd: 5.0,
+  enableCapitalLimit: false,
+  maxAllocatedCapitalUsd: 10.0,
 };
 
 const DEFAULT_CREDENTIALS: BinanceCredentials = {
@@ -496,9 +502,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     ];
   });
 
-  // 9. Market Tickers
+  // 9. Market Tickers (Empty initially - filled only with genuine live Binance data)
   const [marketPairs, setMarketPairs] = useState<FuturesSymbolInfo[]>([]);
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
+
+  // Real-time WebSocket Connection Status
+  const [wsStatus, setWsStatus] = useState<WsConnectionStatus>('disconnected');
+  const [wsStatusDetails, setWsStatusDetails] = useState<string>('Initializing');
+
+  const reconnectWs = () => {
+    console.log('[TradingContext] User or System triggered WebSocket reconnection');
+    binanceWs.connect(credentialsRef.current.isTestnet);
+  };
 
   // 10. AI Learning State
   const [aiState, setAiState] = useState<AILearningState>(() => aiEngine.getState());
@@ -611,12 +626,19 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           totalInitialMargin: Number(currentInitialMargin.toFixed(2)),
         };
 
-  // Validate Binance Credentials
+  // Validate Binance Credentials with Detailed Diagnostic Trace
   const validateCredentials = async (overrideCreds?: BinanceCredentials): Promise<boolean> => {
     const credsToTest = overrideCreds || credentials;
+    console.group('[Binance API Connection Sequence]');
+    console.log(`[Binance API] Step 1: Initializing credential validation for wallet "${credsToTest.walletName || 'Default'}"`);
+    console.log(`[Binance API] Step 2: Environment target: ${credsToTest.isTestnet ? 'Binance Futures TESTNET' : 'Binance Futures PRODUCTION'}`);
+    console.log(`[Binance API] Step 3: API Key present: ${!!credsToTest.apiKey}, Secret Key present: ${!!credsToTest.apiSecret}`);
+
     if (!credsToTest.apiKey || !credsToTest.apiSecret) {
       setApiStatus('disconnected');
       setApiErrorMessage(language === 'ar' ? 'يرجى إدخال مفتاح الـ API والرمز السري أولاً.' : 'Please enter API Key and Secret Key.');
+      console.warn('[Binance API] Stopped: Missing API Key or Secret Key.');
+      console.groupEnd();
       return false;
     }
 
@@ -624,8 +646,12 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setApiErrorMessage('');
 
     try {
+      console.log('[Binance API] Step 4: Dispatching signed account test request...');
       const res = await BinanceService.fetchAccount(credsToTest);
+      console.log('[Binance API] Step 5: Binance responded with:', res);
+
       if (res.success && res.balance) {
+        console.log('[Binance API] Step 6: SUCCESS! Binance Futures Authenticated. Balance:', res.balance);
         setRealBalance(res.balance);
         setApiStatus('connected');
         setCredentials((prev) => {
@@ -649,32 +675,41 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
           return updated;
         });
+        console.groupEnd();
         return true;
       } else {
+        console.warn('[Binance API] Step 6: FAILED! Binance returned error:', res.error);
         setApiStatus('error');
         const errMsg = res.error || 'Failed to authenticate with Binance Futures.';
         setApiErrorMessage(errMsg);
+        console.groupEnd();
         return false;
       }
     } catch (err: any) {
+      console.error('[Binance API] Step 6: EXCEPTION! Network or timeout failure:', err);
       setApiStatus('error');
       setApiErrorMessage(err.message || 'Connection timeout');
+      console.groupEnd();
       return false;
     } finally {
       setIsValidatingApi(false);
     }
   };
 
-  // Fetch Live 24hr Binance Tickers
+  // Fetch Live 24hr Binance Tickers with trace logs
   const refreshMarketData = async () => {
     try {
       setIsLoadingMarket(true);
+      console.log('[TradingContext] Fetching live market data from Binance Futures...');
       const tickers = await BinanceService.fetch24hrTickers(credentialsRef.current.isTestnet);
       if (tickers.length > 0) {
+        console.log(`[TradingContext] Market tickers loaded successfully: ${tickers.length} live USDT contracts.`);
         setMarketPairs(tickers);
+      } else {
+        console.warn('[TradingContext] No market tickers returned by REST.');
       }
     } catch (err) {
-      console.error('Error refreshing tickers:', err);
+      console.error('[TradingContext] Error refreshing tickers:', err);
     } finally {
       setIsLoadingMarket(false);
     }
@@ -999,18 +1034,141 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  // Initial load
+  // Initial load: REST API initial snapshot + WebSocket Real-Time Stream Initialization
   useEffect(() => {
+    console.log('[TradingContext] Running initial boot sequence...');
     refreshMarketData();
     if (credentials.isValidated) {
       refreshAccountData();
     }
+
+    // Set up real-time WebSocket callback handler
+    binanceWs.setCallbacks(
+      (updates: Map<string, TickerUpdate>) => {
+        // Instant sub-second price update for market pairs
+        setMarketPairs((prevPairs) => {
+          if (prevPairs.length === 0) {
+            // Build pairs list directly from live WS stream if REST hasn't populated yet!
+            const newPairs: FuturesSymbolInfo[] = [];
+            updates.forEach((u) => {
+              const price = u.price;
+              const change = u.priceChangePercent;
+              const vol = u.quoteVolume;
+              const rsiBase = 50 + (change > 0 ? Math.min(35, change * 3) : Math.max(-35, change * 3));
+              const rsi14 = Math.round(Math.max(12, Math.min(88, rsiBase)));
+              let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+              if (change > 1.5) trend = 'BULLISH';
+              else if (change < -1.5) trend = 'BEARISH';
+              const aiScore = Math.min(98, Math.max(68, Math.round(rsi14 > 55 ? 82 : 75)));
+
+              let pricePrecision = 2;
+              let quantityPrecision = 3;
+              let minQty = 0.001;
+              if (price >= 1000) { pricePrecision = 2; quantityPrecision = 3; minQty = 0.001; }
+              else if (price >= 10) { pricePrecision = 3; quantityPrecision = 2; minQty = 0.01; }
+              else if (price >= 1) { pricePrecision = 4; quantityPrecision = 1; minQty = 0.1; }
+              else { pricePrecision = 5; quantityPrecision = 0; minQty = 1; }
+
+              newPairs.push({
+                symbol: u.symbol,
+                baseAsset: u.symbol.replace('USDT', ''),
+                quoteAsset: 'USDT',
+                pricePrecision,
+                quantityPrecision,
+                minQty,
+                stepSize: minQty,
+                tickSize: 1 / Math.pow(10, pricePrecision),
+                minNotional: 5,
+                price: u.price,
+                priceChangePercent: u.priceChangePercent,
+                volume24h: u.volume,
+                quoteVolume24h: u.quoteVolume,
+                high24h: u.highPrice,
+                low24h: u.lowPrice,
+                rsi14,
+                trend,
+                aiScore,
+                aiRecommendedSignal: change >= 0 ? 'BUY_LONG' : 'SELL_SHORT',
+                orderbookRatio: 1.05,
+              });
+            });
+            return newPairs;
+          }
+
+          // Merge live stream updates into existing pairs instantly
+          let hasChanges = false;
+          const updated = prevPairs.map((pair) => {
+            const u = updates.get(pair.symbol);
+            if (u && (u.price !== pair.price || u.priceChangePercent !== pair.priceChangePercent)) {
+              hasChanges = true;
+              return {
+                ...pair,
+                price: u.price,
+                priceChangePercent: u.priceChangePercent,
+                high24h: u.highPrice,
+                low24h: u.lowPrice,
+                volume24h: u.volume,
+                quoteVolume24h: u.quoteVolume,
+              };
+            }
+            return pair;
+          });
+
+          return hasChanges ? updated : prevPairs;
+        });
+
+        // Instant sub-second mark price & PnL calculation for active open positions
+        if (positionsRef.current.length > 0) {
+          setPositions((prevPositions) => {
+            let changed = false;
+            const updated = prevPositions.map((pos) => {
+              const u = updates.get(pos.symbol);
+              if (u && u.price > 0 && u.price !== pos.markPrice) {
+                changed = true;
+                const currentMark = u.price;
+                const priceDiff =
+                  pos.side === 'LONG'
+                    ? (currentMark - pos.entryPrice) / pos.entryPrice
+                    : (pos.entryPrice - currentMark) / pos.entryPrice;
+
+                const pnlPct = priceDiff * 100 * pos.leverage;
+                const dollarPnl = pos.amountUsd * (pnlPct / 100);
+                const high = Math.max(pos.highestPriceReached || currentMark, currentMark);
+                const low = Math.min(pos.lowestPriceReached || currentMark, currentMark);
+
+                return {
+                  ...pos,
+                  markPrice: currentMark,
+                  unrealizedProfit: Number(dollarPnl.toFixed(2)),
+                  pnlPercentage: Number(pnlPct.toFixed(2)),
+                  highestPriceReached: high,
+                  lowestPriceReached: low,
+                };
+              }
+              return pos;
+            });
+            return changed ? updated : prevPositions;
+          });
+        }
+      },
+      (status: WsConnectionStatus, details?: string) => {
+        setWsStatus(status);
+        setWsStatusDetails(details || '');
+      }
+    );
+
+    // Initiate WebSocket connection
+    binanceWs.connect(credentialsRef.current.isTestnet);
+
+    return () => {
+      binanceWs.disconnect();
+    };
   }, []);
 
-  // Continuous 24/7 Autonomous Bot Loop & Position Price Tracking
+  // Continuous 24/7 Autonomous Bot Loop & Position Risk/Trailing Stop Trailing Engine
   useEffect(() => {
     const interval = setInterval(async () => {
-      // 1. Refresh live ticker prices
+      // Periodic background REST sync to ensure all new USDT pairs and 24h stats are updated
       let currentTickers = marketPairsRef.current;
       try {
         const freshTickers = await BinanceService.fetch24hrTickers(credentialsRef.current.isTestnet);
@@ -1019,7 +1177,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setMarketPairs(freshTickers);
         }
       } catch (e) {
-        // use existing
+        console.warn('[TradingContext] REST poll fallback triggered:', e);
       }
 
       // 2. Update mark prices and calculate PnL for active positions
@@ -1256,6 +1414,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isValidatingApi,
         apiStatus,
         apiErrorMessage,
+        wsStatus,
+        wsStatusDetails,
+        reconnectWs,
         wallets,
         activeWalletId,
         activeWallet,

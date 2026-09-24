@@ -262,8 +262,21 @@ export const MarketScannerTab: React.FC = () => {
       )}
 
       {/* Pairs Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filteredPairs.slice(0, 36).map((pair) => {
+      {filteredPairs.length === 0 ? (
+        <div className="bg-[#121824] border border-slate-800 rounded-2xl p-10 text-center">
+          <Loader2 className="w-8 h-8 text-amber-400 animate-spin mx-auto mb-3" />
+          <h3 className="text-white font-bold text-sm">
+            {language === 'ar' ? 'جاري مزامنة عقود بينانس الحية والربط بالبث المباشر...' : 'Connecting to Binance Live Stream & Fetching Contracts...'}
+          </h3>
+          <p className="text-slate-400 text-xs mt-1">
+            {language === 'ar'
+              ? 'يتم فحص وتحليل كافة أزواج USDT-M اللحظية مباشرة من بينانس بدون تأخير'
+              : 'Streaming sub-second live prices directly from Binance Futures WebSocket'}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filteredPairs.slice(0, 36).map((pair) => {
           const isBullish = pair.priceChangePercent >= 0;
           const alreadyOpen = isPositionOpen(pair.symbol);
           const isBusy = executingSymbol === pair.symbol || aiAnalyzingSymbol === pair.symbol;
@@ -397,6 +410,7 @@ export const MarketScannerTab: React.FC = () => {
           );
         })}
       </div>
+      )}
     </div>
   );
 };
