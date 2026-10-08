@@ -1,0 +1,277 @@
+{
+  "verdict": "PASS",
+  "processA": {
+    "pid": 659,
+    "completedAt": 1791282461619
+  },
+  "processB": {
+    "pid": 701,
+    "startedAt": 1791282462941
+  },
+  "restartVerified": true,
+  "naturalOpportunity1": {
+    "symbol": "NXPCUSDT",
+    "side": "LONG",
+    "confidence": 78,
+    "rationale": "Qualified LONG setup on NXPCUSDT: EMA 9/21 alignment, RSI at 60.87, RVOL 2.29x, ATR-anchored stop at $0.2337 with 2.33:1 R:R.",
+    "plannedEntry": 0.2358,
+    "actualEntry": 0.2358,
+    "stopLossPrice": 0.2337,
+    "takeProfitPrice": 0.2408,
+    "riskRewardRatio": 2.38,
+    "riskAmount": 158.26,
+    "transactionId": "txn-p-1791282448835-3678",
+    "positionId": "pos-NXPCUSDT-165533093-fa0640",
+    "entryOrderId": "165533093",
+    "stopLossOrderId": "1000000230879880",
+    "takeProfitOrderId": "1000000230879886"
+  },
+  "naturalOpportunity2": {
+    "symbol": "QUSDT",
+    "side": "LONG",
+    "confidence": 83,
+    "rationale": "Qualified LONG setup on QUSDT: EMA 9/21 alignment, RSI at 62.1, RVOL 2.36x, ATR-anchored stop at $0.0213 with 2.33:1 R:R.",
+    "plannedEntry": 0.022012,
+    "actualEntry": 0.022012,
+    "stopLossPrice": 0.0213,
+    "takeProfitPrice": 0.0237,
+    "riskRewardRatio": 2.37,
+    "riskAmount": 158.26,
+    "transactionId": "txn-p-1791282458032-gluk",
+    "positionId": "pos-QUSDT-283681608-66c1eb",
+    "entryOrderId": "283681608",
+    "stopLossOrderId": "1000000230880005",
+    "takeProfitOrderId": "1000000230880008"
+  },
+  "simultaneousHolding": {
+    "verified": true,
+    "symbols": [
+      "NXPCUSDT",
+      "QUSDT"
+    ],
+    "bothActiveAndProtected": true
+  },
+  "replayProtection": {
+    "replayABlocked": true,
+    "replayBBlocked": true,
+    "duplicateOrdersSent": 0
+  },
+  "independentManagement": {
+    "position1Closed": true,
+    "position2Survived": true,
+    "position2SlStillActive": true,
+    "position2TpStillActive": true,
+    "position2ClosedFinally": true
+  },
+  "guards": {
+    "thirdPositionBlocked": true,
+    "duplicateSymbolBlocked": true,
+    "aggregateRiskEnforced": true
+  },
+  "hookusdt": {
+    "symbol": "HOOKUSDT",
+    "side": "SHORT",
+    "quantity": 376509.1,
+    "entryPrice": 0.01325,
+    "untouched": true
+  },
+  "networkSafety": {
+    "productionRequests": 0,
+    "productionOrders": 0,
+    "failClosedGuardActive": true
+  },
+  "finalState": {
+    "activePilotPositions": 0,
+    "orphanOrders": 0,
+    "reconciliationStatus": "RECONCILED_NO_POSITION",
+    "safeClosed": true
+  },
+  "testMatrix": [
+    {
+      "code": "NMP1",
+      "name": "Natural candidate #1 discovered",
+      "passed": true,
+      "details": "Symbol: NXPCUSDT, Signal: LONG"
+    },
+    {
+      "code": "NMP2",
+      "name": "Candidate #1 passed StrategyEngine naturally",
+      "passed": true,
+      "details": "Confidence: 78, Rationale: Qualified LONG setup on NXPCUSDT: EMA 9/21 alignment, RSI at 60.87, RVOL 2.29x, ATR-anchored stop at $0.2337 with 2.33:1 R:R."
+    },
+    {
+      "code": "NMP3",
+      "name": "Position #1 real Testnet execution",
+      "passed": true,
+      "details": "Entry Order ID: 165533093, Qty: 75360"
+    },
+    {
+      "code": "NMP4",
+      "name": "Position #1 protected",
+      "passed": true,
+      "details": "SL Algo ID: 1000000230879880, TP Algo ID: 1000000230879886"
+    },
+    {
+      "code": "NMP5",
+      "name": "Natural candidate #2 discovered",
+      "passed": true,
+      "details": "Symbol: QUSDT, Signal: LONG"
+    },
+    {
+      "code": "NMP6",
+      "name": "Candidate #2 passed StrategyEngine naturally",
+      "passed": true,
+      "details": "Confidence: 83, Rationale: Qualified LONG setup on QUSDT: EMA 9/21 alignment, RSI at 62.1, RVOL 2.36x, ATR-anchored stop at $0.0213 with 2.33:1 R:R."
+    },
+    {
+      "code": "NMP7",
+      "name": "Position #2 real Testnet execution",
+      "passed": true,
+      "details": "Entry Order ID: 283681608, Qty: 222208"
+    },
+    {
+      "code": "NMP8",
+      "name": "A+B open simultaneously",
+      "passed": true,
+      "details": "Simultaneously open on Binance Testnet: NXPCUSDT & QUSDT"
+    },
+    {
+      "code": "NMP9",
+      "name": "A/B identities independent",
+      "passed": true,
+      "details": "Distinct positionIds, transactionIds, orderIds"
+    },
+    {
+      "code": "NMP10",
+      "name": "A/B SL independent",
+      "passed": true,
+      "details": "Distinct Algo Order IDs: 1000000230879880 vs 1000000230880005"
+    },
+    {
+      "code": "NMP11",
+      "name": "A/B TP independent",
+      "passed": true,
+      "details": "Distinct Algo Order IDs: 1000000230879886 vs 1000000230880008"
+    },
+    {
+      "code": "NMP12",
+      "name": "Restart with A+B",
+      "passed": true,
+      "details": "Process A PID 659 != Process B PID 701"
+    },
+    {
+      "code": "NMP13",
+      "name": "A+B restored after restart",
+      "passed": true,
+      "details": "Restored both active positions with PROTECTED lifecycle"
+    },
+    {
+      "code": "NMP14",
+      "name": "Replay A blocked",
+      "passed": true,
+      "details": "Replay blocked by idempotency / authorization"
+    },
+    {
+      "code": "NMP15",
+      "name": "Replay B blocked",
+      "passed": true,
+      "details": "Replay blocked by idempotency / authorization"
+    },
+    {
+      "code": "NMP16",
+      "name": "Close A only",
+      "passed": true,
+      "details": "Controlled close of Position #1 (NXPCUSDT) complete"
+    },
+    {
+      "code": "NMP17",
+      "name": "B survives A close",
+      "passed": true,
+      "details": "Position #2 (QUSDT) remained open and protected"
+    },
+    {
+      "code": "NMP18",
+      "name": "Close B",
+      "passed": true,
+      "details": "Controlled close of Position #2 (QUSDT) complete"
+    },
+    {
+      "code": "NMP19",
+      "name": "Third-position guard",
+      "passed": true,
+      "details": "Attempting 3rd position blocked by POSITION_LIMIT_REACHED"
+    },
+    {
+      "code": "NMP20",
+      "name": "Duplicate-symbol guard",
+      "passed": true,
+      "details": "Attempting duplicate symbol blocked by SYMBOL_ALREADY_ACTIVE"
+    },
+    {
+      "code": "NMP21",
+      "name": "Aggregate risk guard",
+      "passed": true,
+      "details": "Risk per trade 0.5% * 2 <= 2.0% daily risk limit"
+    },
+    {
+      "code": "NMP22",
+      "name": "HOOKUSDT untouched",
+      "passed": true,
+      "details": "SHORT 376509.1 @ 0.01325 100% unchanged"
+    },
+    {
+      "code": "NMP23",
+      "name": "Production traffic = 0",
+      "passed": true,
+      "details": "Production requests: 0"
+    },
+    {
+      "code": "NMP24",
+      "name": "Production orders = 0",
+      "passed": true,
+      "details": "Production orders: 0"
+    },
+    {
+      "code": "NMP25",
+      "name": "No orphan orders",
+      "passed": true,
+      "details": "Orphan orders: 0"
+    },
+    {
+      "code": "NMP26",
+      "name": "Final reconciliation clean",
+      "passed": true,
+      "details": "Active pilot positions = 0"
+    },
+    {
+      "code": "NMP27",
+      "name": "No synthetic signals",
+      "passed": true,
+      "details": "100% natural klines and StrategyEngine calculation"
+    },
+    {
+      "code": "NMP28",
+      "name": "No forced symbols",
+      "passed": true,
+      "details": "Discovered from dynamic universe rotation"
+    },
+    {
+      "code": "NMP29",
+      "name": "No strategy changes",
+      "passed": true,
+      "details": "Zero changes to strategy indicators, formulas, or weights"
+    },
+    {
+      "code": "NMP30",
+      "name": "lint PASS",
+      "passed": true,
+      "details": "Code passes strict linting"
+    },
+    {
+      "code": "NMP31",
+      "name": "build PASS",
+      "passed": true,
+      "details": "Build compiles successfully with zero errors"
+    }
+  ]
+}

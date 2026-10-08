@@ -1,0 +1,64 @@
+{
+  "processAPid": 2704,
+  "processACompletedAt": 1791283921213,
+  "candidate1": {
+    "symbol": "EPICUSDT",
+    "side": "LONG",
+    "confidence": 76,
+    "rationale": "Qualified LONG setup on EPICUSDT: EMA 9/21 alignment, RSI at 65.35, RVOL 2.76x, ATR-anchored stop at $0.5279 with 2.33:1 R:R.",
+    "plannedEntry": 0.5335,
+    "stopLossPrice": 0.5279,
+    "takeProfitPrice": 0.5465,
+    "riskRewardRatio": 2.32,
+    "riskAmount": 157.8,
+    "cycle": 1,
+    "coverageBatch": 1,
+    "timestamp": 1791283921213
+  },
+  "execution1": {
+    "transactionId": "txn-p-1791283899892-bqty",
+    "positionId": "pos-EPICUSDT-251181157-d52809",
+    "entryOrderId": "251181157",
+    "entryStatus": "FILLED",
+    "executedQty": 28178.2,
+    "avgPrice": 0.5337,
+    "stopLossOrderId": "1000000230899211",
+    "takeProfitOrderId": "1000000230899213",
+    "status": "ACTIVE",
+    "lifecycleState": "PROTECTED"
+  },
+  "candidate2": {
+    "symbol": "IOTAUSDT",
+    "side": "LONG",
+    "confidence": 83,
+    "rationale": "Qualified LONG setup on IOTAUSDT: EMA 9/21 alignment, RSI at 67.86, RVOL 2.91x, ATR-anchored stop at $0.0586 with 2.33:1 R:R.",
+    "plannedEntry": 0.05913,
+    "stopLossPrice": 0.0586,
+    "takeProfitPrice": 0.0604,
+    "riskRewardRatio": 2.4,
+    "riskAmount": 157.8,
+    "cycle": 2,
+    "coverageBatch": 2,
+    "timestamp": 1791283921213
+  },
+  "execution2": {
+    "transactionId": "txn-p-1791283917403-u1wr",
+    "positionId": "pos-IOTAUSDT-409869394-c55a96",
+    "entryOrderId": "409869394",
+    "entryStatus": "FILLED",
+    "executedQty": 297569.6,
+    "avgPrice": 0.05912,
+    "stopLossOrderId": "1000000230899452",
+    "takeProfitOrderId": "1000000230899456",
+    "status": "ACTIVE",
+    "lifecycleState": "PROTECTED"
+  },
+  "simultaneousState": {
+    "activePositionsCount": 2,
+    "symbols": [
+      "EPICUSDT",
+      "IOTAUSDT"
+    ],
+    "hookusdtUntouched": true
+  }
+}

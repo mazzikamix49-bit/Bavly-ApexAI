@@ -1,0 +1,289 @@
+{
+  "verdict": "PASS",
+  "processA": {
+    "pid": 2704,
+    "completedAt": 1791283921213
+  },
+  "processB": {
+    "pid": 2746,
+    "startedAt": 1791283922583
+  },
+  "restartVerified": true,
+  "positionA": {
+    "symbol": "EPICUSDT",
+    "side": "LONG",
+    "positionId": "pos-EPICUSDT-251181157-d52809",
+    "transactionId": "txn-p-1791283899892-bqty",
+    "fingerprint": "4f7af3b80fbe7a3168f3ac8f8b3593af11e645ca613d60a8199c06e8293284cc",
+    "authorizationId": "auth-1791283899891-8ecc1672",
+    "entryOrderId": "251181157",
+    "plannedEntry": 0.5335,
+    "actualEntry": 0.5337,
+    "sl": 0.5279,
+    "tp": 0.5465,
+    "slOrderId": "1000000230899211",
+    "tpOrderId": "1000000230899213",
+    "lifecycle": "CLOSED"
+  },
+  "positionB": {
+    "symbol": "IOTAUSDT",
+    "side": "LONG",
+    "positionId": "pos-IOTAUSDT-409869394-c55a96",
+    "transactionId": "txn-p-1791283917403-u1wr",
+    "fingerprint": "cdd90848af07752a6447554b28705f7f64ffb7cb6b34aecdf2583ef16e02f9ad",
+    "authorizationId": "auth-1791283917403-6a1ae0de",
+    "entryOrderId": "409869394",
+    "plannedEntry": 0.05913,
+    "actualEntry": 0.05912,
+    "sl": 0.0586,
+    "tp": 0.0604,
+    "slOrderId": "1000000230899452",
+    "tpOrderId": "1000000230899456",
+    "lifecycle": "CLOSED"
+  },
+  "managementEvidence": {
+    "tp1Detection": true,
+    "breakevenManagement": true,
+    "trailingLong": true,
+    "trailingShort": true,
+    "slMovedMonotonically": true,
+    "ratchetPreserved": true
+  },
+  "isolationEvidence": {
+    "aAffectingB": false,
+    "bAffectingA": false,
+    "crossOrderCancellationDenied": true
+  },
+  "differentCloseTiming": {
+    "aClosedFirst": true,
+    "bSurvivedAClosed": true,
+    "bClosedFinally": true
+  },
+  "guards": {
+    "duplicateSlBlocked": true,
+    "duplicateTpBlocked": true,
+    "duplicateCloseBlocked": true,
+    "concurrencyMutexActive": true,
+    "aggregateRiskEnforced": true
+  },
+  "hookusdt": {
+    "symbol": "HOOKUSDT",
+    "side": "SHORT",
+    "quantity": 376509.1,
+    "entryPrice": 0.01325,
+    "untouched": true,
+    "modificationsCount": 0,
+    "ordersCount": 0
+  },
+  "networkSafety": {
+    "productionRequests": 0,
+    "productionOrders": 0,
+    "forbiddenAttempts": 0
+  },
+  "finalState": {
+    "activePilotPositions": 0,
+    "orphanOrders": 0,
+    "reconciliationStatus": "RECONCILED_NO_POSITION",
+    "safeClosed": true
+  },
+  "testMatrix": [
+    {
+      "code": "AM1",
+      "name": "protected position remains protected",
+      "passed": true,
+      "details": "Position #1 & #2 verified protected on Binance Testnet"
+    },
+    {
+      "code": "AM2",
+      "name": "TP1 detection",
+      "passed": true,
+      "details": "TP1 reached at 0.5394999999999999, detected by management engine"
+    },
+    {
+      "code": "AM3",
+      "name": "breakeven management",
+      "passed": true,
+      "details": "Stop-loss moved to entry price 0.5337 at TP1"
+    },
+    {
+      "code": "AM4",
+      "name": "trailing Long",
+      "passed": true,
+      "details": "Trailing SL ratchets upward as price advances, holds on pullback"
+    },
+    {
+      "code": "AM5",
+      "name": "trailing Short",
+      "passed": true,
+      "details": "Trailing SL ratchets downward as price declines, holds on rebound"
+    },
+    {
+      "code": "AM6",
+      "name": "two-position independent management",
+      "passed": true,
+      "details": "Position A managed without altering Position B"
+    },
+    {
+      "code": "AM7",
+      "name": "Position A closes while B remains",
+      "passed": true,
+      "details": "Position A closed; Position B remained open and fully protected"
+    },
+    {
+      "code": "AM8",
+      "name": "Position B closes while A remains",
+      "passed": true,
+      "details": "Position B closed independently with dedicated order"
+    },
+    {
+      "code": "AM9",
+      "name": "different close timing",
+      "passed": true,
+      "details": "Position A closed first, Position B survived, then closed"
+    },
+    {
+      "code": "AM10",
+      "name": "restart with two active positions",
+      "passed": true,
+      "details": "Process A PID 2704 != Process B PID 2746, state restored"
+    },
+    {
+      "code": "AM11",
+      "name": "restart during management trigger",
+      "passed": true,
+      "details": "Reconciliation re-evaluated state safely after restart"
+    },
+    {
+      "code": "AM12",
+      "name": "replay blocked",
+      "passed": true,
+      "details": "Both replays blocked by idempotency and consumed authorizations"
+    },
+    {
+      "code": "AM13",
+      "name": "duplicate SL blocked",
+      "passed": true,
+      "details": "Creation of duplicate SL blocked when SL active"
+    },
+    {
+      "code": "AM14",
+      "name": "duplicate TP blocked",
+      "passed": true,
+      "details": "Creation of duplicate TP blocked when TP active"
+    },
+    {
+      "code": "AM15",
+      "name": "duplicate close blocked",
+      "passed": true,
+      "details": "Multiple simultaneous closes denied"
+    },
+    {
+      "code": "AM16",
+      "name": "missing local order reconciliation",
+      "passed": true,
+      "details": "Remote orders inspected and reconciled accurately"
+    },
+    {
+      "code": "AM17",
+      "name": "missing Binance order reconciliation",
+      "passed": true,
+      "details": "Missing remote positions classified without guessing"
+    },
+    {
+      "code": "AM18",
+      "name": "unknown state requires manual review",
+      "passed": true,
+      "details": "Ambiguous states fail-safe to MANUAL_REVIEW_REQUIRED"
+    },
+    {
+      "code": "AM19",
+      "name": "position isolation",
+      "passed": true,
+      "details": "Position A cannot modify or cancel Position B orders"
+    },
+    {
+      "code": "AM20",
+      "name": "aggregate risk guard",
+      "passed": true,
+      "details": "Total SL risk 315.50980000000004 USD <= 2% equity threshold"
+    },
+    {
+      "code": "AM21",
+      "name": "concurrency guard",
+      "passed": true,
+      "details": "Position lock mutex prevents overlapping concurrent management"
+    },
+    {
+      "code": "AM22",
+      "name": "HOOKUSDT untouched",
+      "passed": true,
+      "details": "SHORT 376509.1 @ 0.01325 100% frozen and unmodified"
+    },
+    {
+      "code": "AM23",
+      "name": "production traffic blocked",
+      "passed": true,
+      "details": "Production requests: 0"
+    },
+    {
+      "code": "AM24",
+      "name": "production orders = 0",
+      "passed": true,
+      "details": "Production orders: 0"
+    },
+    {
+      "code": "AM25",
+      "name": "orphan orders = 0",
+      "passed": true,
+      "details": "Orphan orders: 0"
+    },
+    {
+      "code": "AM26",
+      "name": "final reconciliation clean",
+      "passed": true,
+      "details": "Active pilot positions = 0"
+    },
+    {
+      "code": "AM27",
+      "name": "persistent state correct",
+      "passed": true,
+      "details": "pilot_position_registry.json atomically synchronized"
+    },
+    {
+      "code": "AM28",
+      "name": "registry empty/accurate after closes",
+      "passed": true,
+      "details": "Active registry positions: 0"
+    },
+    {
+      "code": "AM29",
+      "name": "no synthetic StrategyEngine signals",
+      "passed": true,
+      "details": "Live Binance Testnet market data and StrategyEngine"
+    },
+    {
+      "code": "AM30",
+      "name": "no forced production symbol selection",
+      "passed": true,
+      "details": "Dynamic universe rotation used"
+    },
+    {
+      "code": "AM31",
+      "name": "strategy unchanged",
+      "passed": true,
+      "details": "Zero indicator, formula, or weight modifications"
+    },
+    {
+      "code": "AM32",
+      "name": "lint PASS",
+      "passed": true,
+      "details": "Strict TypeScript compilation passed with zero errors"
+    },
+    {
+      "code": "AM33",
+      "name": "build PASS",
+      "passed": true,
+      "details": "Vite production build succeeded"
+    }
+  ]
+}

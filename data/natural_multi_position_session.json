@@ -1,0 +1,64 @@
+{
+  "processAPid": 659,
+  "processACompletedAt": 1791282461619,
+  "candidate1": {
+    "symbol": "NXPCUSDT",
+    "side": "LONG",
+    "confidence": 78,
+    "rationale": "Qualified LONG setup on NXPCUSDT: EMA 9/21 alignment, RSI at 60.87, RVOL 2.29x, ATR-anchored stop at $0.2337 with 2.33:1 R:R.",
+    "plannedEntry": 0.2358,
+    "stopLossPrice": 0.2337,
+    "takeProfitPrice": 0.2408,
+    "riskRewardRatio": 2.38,
+    "riskAmount": 158.26,
+    "cycle": 1,
+    "coverageBatch": 1,
+    "timestamp": 1791282461619
+  },
+  "execution1": {
+    "transactionId": "txn-p-1791282448835-3678",
+    "positionId": "pos-NXPCUSDT-165533093-fa0640",
+    "entryOrderId": "165533093",
+    "entryStatus": "FILLED",
+    "executedQty": 75360,
+    "avgPrice": 0.2358,
+    "stopLossOrderId": "1000000230879880",
+    "takeProfitOrderId": "1000000230879886",
+    "status": "ACTIVE",
+    "lifecycleState": "PROTECTED"
+  },
+  "candidate2": {
+    "symbol": "QUSDT",
+    "side": "LONG",
+    "confidence": 83,
+    "rationale": "Qualified LONG setup on QUSDT: EMA 9/21 alignment, RSI at 62.1, RVOL 2.36x, ATR-anchored stop at $0.0213 with 2.33:1 R:R.",
+    "plannedEntry": 0.022012,
+    "stopLossPrice": 0.0213,
+    "takeProfitPrice": 0.0237,
+    "riskRewardRatio": 2.37,
+    "riskAmount": 158.26,
+    "cycle": 2,
+    "coverageBatch": 2,
+    "timestamp": 1791282461619
+  },
+  "execution2": {
+    "transactionId": "txn-p-1791282458032-gluk",
+    "positionId": "pos-QUSDT-283681608-66c1eb",
+    "entryOrderId": "283681608",
+    "entryStatus": "FILLED",
+    "executedQty": 222208,
+    "avgPrice": 0.022012,
+    "stopLossOrderId": "1000000230880005",
+    "takeProfitOrderId": "1000000230880008",
+    "status": "ACTIVE",
+    "lifecycleState": "PROTECTED"
+  },
+  "simultaneousState": {
+    "activePositionsCount": 2,
+    "symbols": [
+      "NXPCUSDT",
+      "QUSDT"
+    ],
+    "hookusdtUntouched": true
+  }
+}

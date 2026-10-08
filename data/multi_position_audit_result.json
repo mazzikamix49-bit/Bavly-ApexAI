@@ -1,0 +1,155 @@
+{
+  "verdict": "PASS",
+  "timestamp": 1791194706403,
+  "config": {
+    "maxOpenPositions": 2,
+    "maxEntriesPerCycle": 1,
+    "testnetOnly": true
+  },
+  "hookusdtStatus": {
+    "symbol": "HOOKUSDT",
+    "side": "SHORT",
+    "quantity": 376509.1,
+    "entryPrice": 0.01325,
+    "isolated": true,
+    "pilotSlotsOccupied": 0
+  },
+  "capacityEnforcement": {
+    "maxPositions": 2,
+    "concurrentHoldingProven": true,
+    "thirdPositionBlocked": true,
+    "sameSymbolCollisionBlocked": true
+  },
+  "positionRegistry": {
+    "independentRecords": true,
+    "allRequiredFieldsPresent": true,
+    "persistenceVerified": true,
+    "independentReconciliationProven": true
+  },
+  "networkGuard": {
+    "productionRequests": 0,
+    "productionOrders": 0,
+    "failClosedEnforced": true
+  },
+  "finalState": {
+    "activePilotPositions": 0,
+    "orphanOrders": 0,
+    "safeClosed": true
+  },
+  "testMatrix": [
+    {
+      "code": "MP1",
+      "name": "Registry initializes empty with maxOpenPositions = 2",
+      "passed": true,
+      "details": "Active: 0, Max: 2"
+    },
+    {
+      "code": "MP2",
+      "name": "Register Position #1 (BTCUSDT) with full schema",
+      "passed": true,
+      "details": "PositionId: pos-BTCUSDT-100101-a8b570, Active: 1"
+    },
+    {
+      "code": "MP3",
+      "name": "Position #1 protective orders update lifecycle to PROTECTED",
+      "passed": true,
+      "details": "Lifecycle: PROTECTED"
+    },
+    {
+      "code": "MP4",
+      "name": "Symbol collision prevention blocks duplicate BTCUSDT",
+      "passed": true,
+      "details": "Check: SYMBOL_ALREADY_ACTIVE: Symbol BTCUSDT already has active position pos-BTCUSDT-100101-a8b570."
+    },
+    {
+      "code": "MP5",
+      "name": "Concurrent positions #1 and #2 active simultaneously",
+      "passed": true,
+      "details": "Active count: 2/2"
+    },
+    {
+      "code": "MP6",
+      "name": "Attempting 3rd position strictly blocked by capacity guard",
+      "passed": true,
+      "details": "Reason: MAX_OPEN_POSITIONS_REACHED: Currently holding 2 active positions (max 2)."
+    },
+    {
+      "code": "MP7",
+      "name": "HOOKUSDT strictly excluded and forbidden in registry",
+      "passed": true,
+      "details": "Reason: HOOKUSDT_EXCLUDED_FROM_PILOT"
+    },
+    {
+      "code": "MP8",
+      "name": "Unique Position Identity prevents conflation of positions",
+      "passed": true,
+      "details": "P1 ID: pos-BTCUSDT-100101-a8b570, P2 ID: pos-ETHUSDT-200201-5a9b9d"
+    },
+    {
+      "code": "MP9",
+      "name": "Independent native reconciliation verifies each position independently",
+      "passed": true,
+      "details": "BTC sync: true, ETH sync: true"
+    },
+    {
+      "code": "MP10",
+      "name": "Persistence across restart: All active positions restored intact",
+      "passed": true,
+      "details": "Restored active count: 2/2"
+    },
+    {
+      "code": "MP11",
+      "name": "Clean exit of Position #1 frees slot for next opportunity",
+      "passed": true,
+      "details": "Active: 1, Slot open for SOL: true"
+    },
+    {
+      "code": "MP12",
+      "name": "Clean exit of Position #2 leaves 0 active pilot positions",
+      "passed": true,
+      "details": "Final active count: 0"
+    },
+    {
+      "code": "MP13",
+      "name": "Cycle 1: Opens and holds Position #1 (BTCUSDT)",
+      "passed": true,
+      "details": "Decision: FULL_EXECUTION_CONFIRMED, PositionId: pos-BTCUSDT-mock-order-1791194702211-w70aq-9ea14a"
+    },
+    {
+      "code": "MP14",
+      "name": "Duplicate candidate symbol in cycle strictly rejected",
+      "passed": true,
+      "details": "Decision: SYMBOL_ALREADY_ACTIVE"
+    },
+    {
+      "code": "MP15",
+      "name": "Cycle 2: Opens and holds Position #2 (ETHUSDT) concurrently",
+      "passed": true,
+      "details": "Decision: FULL_EXECUTION_CONFIRMED, Active: 2/2"
+    },
+    {
+      "code": "MP16",
+      "name": "Cycle 3: Opening 3rd position strictly blocked by maxOpenPositions guard",
+      "passed": true,
+      "details": "Decision: POSITION_LIMIT_REACHED"
+    },
+    {
+      "code": "MP17",
+      "name": "Candidate scanner returns MAX_POSITIONS_REACHED when 2 positions open",
+      "passed": true,
+      "details": "Reason: MAX_POSITIONS_REACHED"
+    },
+    {
+      "code": "MP18",
+      "name": "reconcilePilotPositions verifies both active positions",
+      "passed": true,
+      "details": "Active counted: 2"
+    },
+    {
+      "code": "MP19",
+      "name": "Strict Testnet Network Guard: 0 production requests or orders",
+      "passed": true,
+      "details": "Prod requests: 0, Prod orders: 0"
+    }
+  ]
+}

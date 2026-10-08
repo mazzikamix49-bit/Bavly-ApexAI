@@ -4,24 +4,20 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  ExternalLink,
-  Flame,
   Layers,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   TrendingDown,
   TrendingUp,
-  Trophy,
   X,
   Zap,
 } from 'lucide-react';
-import { Position } from '../types/trading';
 
 export const ActivePositionsTable: React.FC = () => {
-  const { positions, closePosition, closeAllPositions, t, language } = useTrading();
+  const { positions, closePosition, closeAllPositions, t, language, runReconciliation } = useTrading();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [isClosingAll, setIsClosingAll] = useState(false);
+  const [isReconciling, setIsReconciling] = useState(false);
   const isArabic = language === 'ar';
 
   const handleClose = async (posId: string) => {
@@ -36,6 +32,12 @@ export const ActivePositionsTable: React.FC = () => {
       await closeAllPositions();
       setIsClosingAll(false);
     }
+  };
+
+  const handleManualReconcile = async () => {
+    setIsReconciling(true);
+    await runReconciliation();
+    setIsReconciling(false);
   };
 
   const formatAge = (openedAt: number) => {
@@ -65,16 +67,30 @@ export const ActivePositionsTable: React.FC = () => {
           </div>
         </div>
 
-        {positions.length > 0 && (
-          <button
-            onClick={handleCloseAll}
-            disabled={isClosingAll}
-            className="self-start sm:self-auto px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 transition flex items-center gap-1.5"
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{isClosingAll ? t.closing : language === 'ar' ? 'إغلاق كافة الصفقات فورا' : 'Close All Positions'}</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {positions.length > 0 && (
+            <>
+              <button
+                onClick={handleManualReconcile}
+                disabled={isReconciling}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center gap-1.5"
+                title={t.reconcileNow}
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+                <span>{t.reconcileNow}</span>
+              </button>
+
+              <button
+                onClick={handleCloseAll}
+                disabled={isClosingAll}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 transition flex items-center gap-1.5"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>{isClosingAll ? t.closing : isArabic ? 'إغلاق الكل فوراً' : 'Close All'}</span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Content */}
@@ -87,9 +103,9 @@ export const ActivePositionsTable: React.FC = () => {
             {t.noActivePositions}
           </p>
           <p className="text-xs text-slate-500 mt-1">
-            {language === 'ar'
-              ? 'البوت يفحص كافة أزواج منصة بينانس ويدخل فور توافر أفضل شروط الربح'
-              : 'Autonomous bot scanning all Binance pairs 24/7 for optimal risk-reward entries'}
+            {isArabic
+              ? 'محرك المخاطر والماسح الآلي يراقبان السوق لدخول الصفقات المطابقة فقط'
+              : 'Quantitative Risk Engine & Scanner monitoring for strictly qualified setups'}
           </p>
         </div>
       ) : (
@@ -99,31 +115,14 @@ export const ActivePositionsTable: React.FC = () => {
               <tr>
                 <th className="py-3 px-4">{t.pair}</th>
                 <th className="py-3 px-3">{t.side}</th>
-                <th className="py-3 px-3">{t.leverage}</th>
-                <th className="py-3 px-3">{t.size}</th>
+                <th className="py-3 px-3">Margin / Size</th>
                 <th className="py-3 px-3">{t.entryPrice}</th>
                 <th className="py-3 px-3">{t.markPrice}</th>
                 <th className="py-3 px-3">{t.liqPrice}</th>
-                {/* Dynamically Parsed Live PnL (Entry vs Current) */}
-                <th className="py-3 px-3">
-                  <div className="flex flex-col">
-                    <span>{t.pnl}</span>
-                    <span className="text-[9px] text-slate-500 normal-case font-sans">
-                      {isArabic ? '(الربح العائم اللحظي)' : '(Mark-to-Market)'}
-                    </span>
-                  </div>
-                </th>
-                {/* Explicit Realized Profit/Loss per Individual Trade Row */}
-                <th className="py-3 px-3">
-                  <div className="flex flex-col">
-                    <span className="text-emerald-400 font-bold">{t.realizedPnl}</span>
-                    <span className="text-[9px] text-emerald-500/80 normal-case font-sans">
-                      {isArabic ? '(المحقق بالوقف الذكي)' : '(Smart Trailed / Locked)'}
-                    </span>
-                  </div>
-                </th>
-                <th className="py-3 px-3">{t.duration}</th>
-                <th className="py-3 px-3">{t.aiConfidence}</th>
+                <th className="py-3 px-3">Stop Loss Status</th>
+                <th className="py-3 px-3">Take Profit Status</th>
+                <th className="py-3 px-3">{t.pnl}</th>
+                <th className="py-3 px-3">Fees & Sync</th>
                 <th className="py-3 px-4 text-right">{t.action}</th>
               </tr>
             </thead>
@@ -131,63 +130,21 @@ export const ActivePositionsTable: React.FC = () => {
               {positions.map((pos, idx) => {
                 const isLong = pos.side === 'LONG';
                 const currentPrice = pos.markPrice > 0 ? pos.markPrice : pos.entryPrice;
-
-                // 1. Explicit calculation of profit percentage and currency amount based on entry price vs current market price
-                const priceSpread = isLong
-                  ? currentPrice - pos.entryPrice
-                  : pos.entryPrice - currentPrice;
-                const priceChangePercent = pos.entryPrice > 0 ? (priceSpread / pos.entryPrice) * 100 : 0;
-                const calculatedPnlPercentage = Number((priceChangePercent * pos.leverage).toFixed(2));
-                const calculatedPnlCurrencyUsd = Number((pos.amountUsd * (calculatedPnlPercentage / 100)).toFixed(2));
-                const isProfit = calculatedPnlCurrencyUsd >= 0;
-
-                // 2. Explicit calculation and display of 'Realized Profit/Loss' per individual trade row
-                let realizedPnlCurrencyUsd = 0;
-                let realizedPnlPercentage = 0;
-                let realizedStage: 'PENDING' | 'BREAKEVEN' | 'TP1_LOCKED' | 'TP2_LOCKED' = 'PENDING';
-
-                const tpLevel = pos.tpLevelReached || 0;
-                if (tpLevel === 1) {
-                  // Level 1: Stop-loss automatically moved to entry (Breakeven) -> Risk is eliminated, 0% capital loss guaranteed
-                  realizedStage = 'BREAKEVEN';
-                  realizedPnlCurrencyUsd = 0.00;
-                  realizedPnlPercentage = 0.00;
-                } else if (tpLevel === 2) {
-                  // Level 2: Stop-loss trailed to TP1 price level -> Guaranteed TP1 profit locked in
-                  realizedStage = 'TP1_LOCKED';
-                  if (pos.tp1Price && pos.entryPrice) {
-                    const tp1Spread = isLong ? pos.tp1Price - pos.entryPrice : pos.entryPrice - pos.tp1Price;
-                    realizedPnlPercentage = Number(((tp1Spread / pos.entryPrice) * pos.leverage * 100).toFixed(2));
-                    realizedPnlCurrencyUsd = Number((pos.amountUsd * (realizedPnlPercentage / 100)).toFixed(2));
-                  } else {
-                    realizedPnlCurrencyUsd = Number((pos.securedProfitUsd || (pos.amountUsd * 0.015 * pos.leverage)).toFixed(2));
-                    realizedPnlPercentage = Number(((realizedPnlCurrencyUsd / pos.amountUsd) * 100).toFixed(2));
-                  }
-                } else if (tpLevel >= 3) {
-                  // Level 3: Stop-loss trailed to TP2 price level -> Guaranteed TP2 profit locked in
-                  realizedStage = 'TP2_LOCKED';
-                  if (pos.tp2Price && pos.entryPrice) {
-                    const tp2Spread = isLong ? pos.tp2Price - pos.entryPrice : pos.entryPrice - pos.tp2Price;
-                    realizedPnlPercentage = Number(((tp2Spread / pos.entryPrice) * pos.leverage * 100).toFixed(2));
-                    realizedPnlCurrencyUsd = Number((pos.amountUsd * (realizedPnlPercentage / 100)).toFixed(2));
-                  } else {
-                    realizedPnlCurrencyUsd = Number((pos.securedProfitUsd || (pos.amountUsd * 0.035 * pos.leverage)).toFixed(2));
-                    realizedPnlPercentage = Number(((realizedPnlCurrencyUsd / pos.amountUsd) * 100).toFixed(2));
-                  }
-                }
+                const isProfit = pos.unrealizedProfit >= 0;
 
                 return (
-                  <tr
-                    key={`${pos.id || 'pos'}-${idx}`}
-                    className="hover:bg-slate-800/30 transition-colors"
-                  >
+                  <tr key={`${pos.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
                     {/* Pair */}
                     <td className="py-3.5 px-4 font-bold text-white flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-amber-400"></span>
                       <span>{pos.symbol}</span>
-                      {pos.isRealOrder && (
+                      {pos.isRealOrder ? (
                         <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                           REAL
+                        </span>
+                      ) : (
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          PAPER
                         </span>
                       )}
                     </td>
@@ -201,29 +158,18 @@ export const ActivePositionsTable: React.FC = () => {
                             : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
                         }`}
                       >
-                        {isLong ? (
-                          <TrendingUp className="w-3 h-3" />
-                        ) : (
-                          <TrendingDown className="w-3 h-3" />
-                        )}
+                        {isLong ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                         <span>{isLong ? t.long : t.short}</span>
                       </span>
                     </td>
 
-                    {/* Leverage */}
-                    <td className="py-3.5 px-3 text-slate-300">
-                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300 font-semibold border border-amber-400/20">
-                        {pos.leverage}x
-                      </span>
-                    </td>
-
-                    {/* Size */}
+                    {/* Margin & Notional Exposure */}
                     <td className="py-3.5 px-3 text-slate-300">
                       <div className="font-semibold text-white">
-                        ${pos.amountUsd.toFixed(2)}
+                        ${pos.amountUsd.toFixed(2)} <span className="text-[10px] text-amber-400 font-mono font-normal">({pos.leverage}x)</span>
                       </div>
                       <div className="text-[10px] text-slate-500">
-                        {pos.quantity} {pos.symbol.replace('USDT', '')}
+                        ${(pos.quantity * currentPrice).toFixed(1)} notional ({pos.quantity} units)
                       </div>
                     </td>
 
@@ -242,130 +188,66 @@ export const ActivePositionsTable: React.FC = () => {
                       ${pos.liquidationPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>
 
-                    {/* 1. Unrealized Live Profit/Loss (Parsed Entry vs Current Market Price) */}
+                    {/* Stop Loss Status: Planned vs Confirmed */}
                     <td className="py-3.5 px-3">
-                      <div
-                        className={`font-bold flex items-center gap-1 text-sm ${
-                          isProfit ? 'text-emerald-400' : 'text-rose-400'
-                        }`}
-                      >
-                        <span>
-                          {isProfit ? '+' : ''}${calculatedPnlCurrencyUsd.toFixed(2)}
-                        </span>
-                        <span className="text-[10px] font-semibold">
-                          ({isProfit ? '+' : ''}{calculatedPnlPercentage.toFixed(2)}%)
-                        </span>
+                      <div className="flex items-center gap-1 font-semibold text-rose-400">
+                        <span>${pos.stopLossPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                       </div>
-
-                      {/* Explicit mathematical parse details */}
-                      <div className="text-[10px] text-slate-500 mt-0.5 font-sans leading-tight">
-                        Δ {isLong ? '+' : '-'}${Math.abs(priceSpread).toFixed(2)} ({priceChangePercent.toFixed(2)}% × {pos.leverage}x)
+                      <div className="text-[10px] flex items-center gap-1 mt-0.5">
+                        {pos.stopLossOrderStatus === 'ACTIVE' ? (
+                          <span className="text-emerald-400 flex items-center gap-0.5">
+                            <ShieldCheck className="w-2.5 h-2.5" /> Exchange Active
+                          </span>
+                        ) : (
+                          <span className="text-amber-400 flex items-center gap-0.5">
+                            <ShieldAlert className="w-2.5 h-2.5" /> Client Monitored
+                          </span>
+                        )}
                       </div>
-
-                      {/* Multi-Target Progression Badges */}
-                      {pos.tp1Price && (
-                        <div className="mt-1 flex items-center gap-1 text-[9px] font-mono">
-                          <span
-                            className={`px-1 py-0.2 rounded font-bold ${
-                              tpLevel >= 1
-                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                : 'bg-slate-800 text-slate-400'
-                            }`}
-                          >
-                            TP1: ${pos.tp1Price}
-                          </span>
-                          <span
-                            className={`px-1 py-0.2 rounded font-bold ${
-                              tpLevel >= 2
-                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                : 'bg-slate-800 text-slate-400'
-                            }`}
-                          >
-                            TP2: ${pos.tp2Price}
-                          </span>
-                          <span className="px-1 py-0.2 rounded bg-slate-800 text-amber-300">
-                            TP3: ${pos.tp3Price || pos.takeProfitPrice}
-                          </span>
-                        </div>
-                      )}
                     </td>
 
-                    {/* 2. Explicit Realized Profit/Loss Column (Locked Profit via Smart Trailing) */}
+                    {/* Take Profit Status */}
                     <td className="py-3.5 px-3">
-                      {realizedStage === 'PENDING' && (
-                        <div>
-                          <div className="text-slate-400 font-bold text-xs">$0.00</div>
-                          <span className="inline-flex items-center gap-1 text-[10px] text-slate-500 font-sans mt-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
-                            <span>{isArabic ? 'قيد الوصول لـ TP1' : 'Pending TP1'}</span>
-                          </span>
-                        </div>
-                      )}
-
-                      {realizedStage === 'BREAKEVEN' && (
-                        <div>
-                          <div className="text-cyan-400 font-bold text-xs">$0.00 (0.0%)</div>
-                          <span className="inline-flex items-center gap-1 text-[10px] text-cyan-300 font-sans mt-0.5 px-1.5 py-0.5 rounded bg-cyan-950/60 border border-cyan-500/30">
-                            <ShieldCheck className="w-3 h-3 text-cyan-400" />
-                            <span>{isArabic ? 'مؤمن لسعر الدخول' : 'Breakeven Secured'}</span>
-                          </span>
-                        </div>
-                      )}
-
-                      {realizedStage === 'TP1_LOCKED' && (
-                        <div>
-                          <div className="text-emerald-400 font-bold text-xs">
-                            +${realizedPnlCurrencyUsd.toFixed(2)} (+{realizedPnlPercentage.toFixed(1)}%)
-                          </div>
-                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 font-sans mt-0.5 px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/40">
-                            <Flame className="w-3 h-3 text-emerald-400" />
-                            <span>{isArabic ? 'أرباح TP1 محجوزة' : 'TP1 Locked'}</span>
-                          </span>
-                        </div>
-                      )}
-
-                      {realizedStage === 'TP2_LOCKED' && (
-                        <div>
-                          <div className="text-amber-300 font-bold text-xs">
-                            +${realizedPnlCurrencyUsd.toFixed(2)} (+{realizedPnlPercentage.toFixed(1)}%)
-                          </div>
-                          <span className="inline-flex items-center gap-1 text-[10px] text-amber-300 font-sans mt-0.5 px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-500/40">
-                            <Trophy className="w-3 h-3 text-amber-400" />
-                            <span>{isArabic ? 'أرباح TP2 محجوزة' : 'TP2 Locked'}</span>
-                          </span>
-                        </div>
-                      )}
+                      <div className="font-semibold text-emerald-400">
+                        ${pos.takeProfitPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {pos.tpLevelReached && pos.tpLevelReached > 0 ? (
+                          <span className="text-cyan-400">TP{pos.tpLevelReached} Hit (Trailed)</span>
+                        ) : (
+                          <span>Target 2: ${pos.tp2Price || pos.takeProfitPrice}</span>
+                        )}
+                      </div>
                     </td>
 
-                    {/* Age / Duration */}
+                    {/* Unrealized Live PnL */}
+                    <td className="py-3.5 px-3">
+                      <div className={`font-bold flex items-center gap-1 text-sm ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        <span>{isProfit ? '+' : ''}${pos.unrealizedProfit.toFixed(2)}</span>
+                      </div>
+                      <div className={`text-[10px] font-semibold ${isProfit ? 'text-emerald-500/90' : 'text-rose-500/90'}`}>
+                        {isProfit ? '+' : ''}{pos.pnlPercentage.toFixed(2)}%
+                      </div>
+                    </td>
+
+                    {/* Fees & Reconciliation */}
                     <td className="py-3.5 px-3 text-slate-400">
-                      <span className="flex items-center gap-1 text-[11px]">
-                        <Clock className="w-3 h-3 text-slate-500" />
-                        {formatAge(pos.openedAt)}
-                      </span>
-                    </td>
-
-                    {/* AI Score */}
-                    <td className="py-3.5 px-3">
-                      <div className="flex items-center gap-1 text-cyan-300 font-semibold text-[11px]">
-                        <Sparkles className="w-3 h-3 text-cyan-400" />
-                        <span>{pos.aiConfidence}%</span>
+                      <div className="text-[11px]">
+                        Fee: ~${(pos.estimatedCommissionUsd || 0.02).toFixed(2)}
                       </div>
-                      <div className="text-[9px] text-slate-500 truncate max-w-[120px]" title={pos.rationale}>
-                        {pos.rationale}
+                      <div className="text-[10px] text-slate-500 flex items-center gap-1">
+                        <Clock className="w-2.5 h-2.5" /> {formatAge(pos.openedAt)}
                       </div>
                     </td>
 
-                    {/* Action: 1-Click Close */}
+                    {/* Action */}
                     <td className="py-3.5 px-4 text-right">
                       <button
                         onClick={() => handleClose(pos.id)}
                         disabled={closingId === pos.id}
-                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 hover:border-rose-400 transition flex items-center gap-1 ml-auto"
-                        title={t.closePosition}
+                        className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 border border-slate-700 hover:border-rose-500/30 transition"
                       >
-                        <X className="w-3 h-3" />
-                        <span>{closingId === pos.id ? t.closing : language === 'ar' ? 'إغلاق' : 'Close'}</span>
+                        {closingId === pos.id ? t.closing : t.closePosition}
                       </button>
                     </td>
                   </tr>

@@ -41,12 +41,14 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
     wsStatus,
     wsStatusDetails,
     reconnectWs,
+    sessionState,
+    confirmProductionTrading,
   } = useTrading();
 
   const isArabic = language === 'ar';
 
   return (
-    <header className="border-b border-slate-800 bg-[#0f141f]/95 backdrop-blur sticky top-0 z-30 shadow-lg shadow-black/40">
+    <header className="border-b border-slate-800 bg-[#0f141f] relative z-20 shadow-lg shadow-black/40">
       {/* Top Banner */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -72,7 +74,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
                     <span className="text-amber-400">Bavly</span>
                     <span>ApexAI</span>
                     <span className="text-amber-400 font-mono text-xs px-2 py-0.5 rounded bg-amber-400/10 border border-amber-400/20">
-                      BINANCE FUTURES
+                      V2 QUANT
                     </span>
                   </h1>
                 </div>
@@ -102,6 +104,33 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
 
           {/* Quick Control Center */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {/* Real Bot Uptime Counter (HH:MM:SS) */}
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono font-bold border transition-all ${
+                sessionState.elapsedSeconds >= 18000
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-amber-500/10'
+                  : 'bg-slate-900 border-slate-800 text-slate-200'
+              }`}
+              title={
+                isArabic
+                  ? `مدة الجلسة الحية: ${sessionState.formattedDuration} (${sessionState.isServerBacked ? 'خادم متصل' : 'جلسة حية'})`
+                  : `Authoritative Bot Uptime: ${sessionState.formattedDuration} (${sessionState.isServerBacked ? 'Server Synchronized' : 'Client Session'})`
+              }
+            >
+              <span className={`w-2 h-2 rounded-full ${botRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`}></span>
+              <span className="text-[11px] text-slate-400 uppercase font-sans font-medium">
+                {isArabic ? 'المدة:' : 'Uptime:'}
+              </span>
+              <span className="text-amber-400 tracking-wider text-xs sm:text-sm">
+                {sessionState.formattedDuration}
+              </span>
+              {sessionState.elapsedSeconds >= 18000 && (
+                <span className="text-[10px] px-1 py-0.2 rounded bg-amber-400 text-black font-extrabold uppercase">
+                  5H+
+                </span>
+              )}
+            </div>
+
             {/* 24/7 Bot State Toggle */}
             <button
               onClick={toggleBot}
@@ -124,7 +153,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
               )}
             </button>
 
-            {/* Trading Mode Switch (Real vs Paper) */}
+            {/* Trading Mode Switch (Real vs Paper Sandbox) */}
             <div className="flex items-center rounded-lg bg-slate-900 border border-slate-800 p-0.5 text-xs">
               <button
                 onClick={() => setTradingMode('paper')}
@@ -137,7 +166,13 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
                 {t.paperMode}
               </button>
               <button
-                onClick={() => setTradingMode('real')}
+                onClick={() => {
+                  if (!settings.productionConfirmed) {
+                    onOpenSettings();
+                  } else {
+                    setTradingMode('real');
+                  }
+                }}
                 className={`px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1.5 ${
                   tradingMode === 'real'
                     ? 'bg-emerald-500 text-black font-bold shadow'

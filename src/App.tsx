@@ -13,6 +13,7 @@ import { SocialCopyTradingTab } from './components/SocialCopyTradingTab';
 import { TechnicalSupportTab } from './components/TechnicalSupportTab';
 import { SettingsModal } from './components/SettingsModal';
 import { ClosedTradesHistoryModal } from './components/ClosedTradesHistoryModal';
+import { DiagnosticLogsFooter } from './components/DiagnosticLogsFooter';
 import {
   Activity,
   Bot,
@@ -120,6 +121,9 @@ const MainAppContent: React.FC = () => {
           {activeTab === 'support' && <TechnicalSupportTab />}
         </div>
       </main>
+
+      {/* Real-Time WebSocket & Binance API Diagnostic Logs Footer */}
+      <DiagnosticLogsFooter />
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-[#07090e] py-4 text-center text-xs text-slate-500 font-mono">

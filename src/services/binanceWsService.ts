@@ -8,6 +8,8 @@
  * Includes automatic reconnection with exponential backoff and heartbeat health checking.
  */
 
+import { diagnosticManager } from './diagnosticManager';
+
 export type WsConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
 
 export interface TickerUpdate {
@@ -32,6 +34,7 @@ export class BinanceWsService {
   private reconnectTimeoutId: any = null;
   private pingIntervalId: any = null;
   private lastMessageTimestamp = 0;
+  private messagesReceivedCount = 0;
 
   private onTickersUpdate: TickerCallback | null = null;
   private onStatusChange: StatusCallback | null = null;
@@ -58,6 +61,20 @@ export class BinanceWsService {
     }
   }
 
+  private getReadyStateText(state: number): string {
+    switch (state) {
+      case 0: return '0 - CONNECTING';
+      case 1: return '1 - OPEN';
+      case 2: return '2 - CLOSING';
+      case 3: return '3 - CLOSED';
+      default: return `${state} - UNKNOWN`;
+    }
+  }
+
+  public getRawWebSocket(): WebSocket | null {
+    return this.ws;
+  }
+
   public connect(isTestnet?: boolean) {
     if (isTestnet !== undefined) {
       this.isTestnet = isTestnet;
@@ -72,6 +89,20 @@ export class BinanceWsService {
 
     this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
+    diagnosticManager.updateWsState({
+      readyState: 0,
+      readyStateText: '0 - CONNECTING',
+      endpoint: baseUrl,
+      reconnectAttempts: this.reconnectAttempts,
+      status: this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting',
+    });
+    diagnosticManager.addLog({
+      source: 'WS',
+      level: 'info',
+      title: `WS Initializing connection (${this.reconnectAttempts > 0 ? `Reconnect #${this.reconnectAttempts}` : 'Initial'})`,
+      details: { endpoint: baseUrl, attempt: this.reconnectAttempts + 1 },
+    });
+
     try {
       console.log(`[Binance WS] Initializing connection to: ${baseUrl} (Attempt ${this.reconnectAttempts + 1})`);
       this.ws = new WebSocket(baseUrl);
@@ -82,10 +113,52 @@ export class BinanceWsService {
         this.lastMessageTimestamp = Date.now();
         this.updateStatus('connected', 'Live sub-second prices');
         this.startHeartbeatCheck();
+
+        diagnosticManager.updateWsState({
+          readyState: this.ws?.readyState ?? 1,
+          readyStateText: '1 - OPEN',
+          status: 'connected',
+          reconnectAttempts: 0,
+          lastMessageTime: new Date().toLocaleTimeString(),
+          bufferedAmount: this.ws?.bufferedAmount || 0,
+        });
+        diagnosticManager.addLog({
+          source: 'WS',
+          level: 'success',
+          title: `WS Connected: Real-time stream active (${baseUrl})`,
+          details: { endpoint: baseUrl, readyState: '1 - OPEN', protocol: this.ws?.protocol || 'wss' },
+        });
       };
 
       this.ws.onmessage = (event) => {
         this.lastMessageTimestamp = Date.now();
+        this.messagesReceivedCount++;
+
+        diagnosticManager.updateWsState({
+          lastMessageTime: new Date().toLocaleTimeString(),
+          messagesReceived: this.messagesReceivedCount,
+          bufferedAmount: this.ws?.bufferedAmount || 0,
+          readyState: this.ws?.readyState ?? 1,
+          readyStateText: '1 - OPEN',
+          status: 'connected',
+        });
+
+        if (this.messagesReceivedCount === 1) {
+          diagnosticManager.addLog({
+            source: 'WS',
+            level: 'success',
+            title: 'WS First Ticker Packet Received',
+            details: { firstPacketAt: new Date().toLocaleTimeString() },
+          });
+        } else if (this.messagesReceivedCount % 250 === 0) {
+          diagnosticManager.addLog({
+            source: 'WS',
+            level: 'info',
+            title: `WS Stream Milestone: ${this.messagesReceivedCount.toLocaleString()} packets processed`,
+            details: { totalPackets: this.messagesReceivedCount, bufferedAmount: this.ws?.bufferedAmount || 0 },
+          });
+        }
+
         try {
           const raw = JSON.parse(event.data);
           if (Array.isArray(raw)) {
@@ -116,11 +189,36 @@ export class BinanceWsService {
       this.ws.onerror = (err) => {
         console.warn('[Binance WS] WebSocket encountered error:', err);
         this.updateStatus('error', 'Connection error');
+
+        diagnosticManager.updateWsState({
+          status: 'error',
+          readyState: this.ws?.readyState ?? 3,
+          readyStateText: this.getReadyStateText(this.ws?.readyState ?? 3),
+        });
+        diagnosticManager.addLog({
+          source: 'WS',
+          level: 'error',
+          title: 'WS Connection Error',
+          details: { readyState: this.ws?.readyState, error: String(err) },
+        });
       };
 
       this.ws.onclose = (event) => {
         console.warn(`[Binance WS] Socket closed (Code: ${event.code}, Clean: ${event.wasClean})`);
         this.stopHeartbeatCheck();
+
+        diagnosticManager.updateWsState({
+          readyState: this.ws?.readyState ?? 3,
+          readyStateText: '3 - CLOSED',
+          status: this.isExplicitlyClosed ? 'disconnected' : 'reconnecting',
+        });
+        diagnosticManager.addLog({
+          source: 'WS',
+          level: this.isExplicitlyClosed ? 'info' : 'warn',
+          title: `WS Closed: Code ${event.code} (Clean: ${event.wasClean})`,
+          details: { code: event.code, reason: event.reason || 'None', wasClean: event.wasClean },
+        });
+
         if (!this.isExplicitlyClosed) {
           this.scheduleReconnect();
         } else {
@@ -130,6 +228,12 @@ export class BinanceWsService {
     } catch (err: any) {
       console.error('[Binance WS] Failed to initialize WebSocket client:', err);
       this.updateStatus('error', err.message);
+      diagnosticManager.addLog({
+        source: 'WS',
+        level: 'error',
+        title: 'WS Init Failure',
+        details: { message: err.message },
+      });
       this.scheduleReconnect();
     }
   }

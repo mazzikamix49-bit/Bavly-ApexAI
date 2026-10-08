@@ -5,8 +5,7 @@ import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
-const app = express();
-app.use(express.json());
+export const apiRouter = express.Router();
 
 // Initialize Google Gemini AI if API key is provided
 let aiClient: GoogleGenAI | null = null;
@@ -25,49 +24,275 @@ if (process.env.GEMINI_API_KEY) {
   }
 }
 
+// Safe Binance Environment and Guard Configuration
+const getBinanceEnv = (): 'testnet' | 'production' => {
+  const env = (process.env.BINANCE_ENV || 'testnet').trim().toLowerCase();
+  return env === 'production' ? 'production' : 'testnet';
+};
+
+const isProductionTradingAllowed = (): boolean => {
+  return process.env.ALLOW_PRODUCTION_TRADING === 'true';
+};
+
+const resolveIsTestnet = (paramIsTestnet?: any): boolean => {
+  if (paramIsTestnet !== undefined && paramIsTestnet !== null && paramIsTestnet !== '') {
+    return paramIsTestnet === true || paramIsTestnet === 'true';
+  }
+  return getBinanceEnv() !== 'production';
+};
+
 // Helpers for Binance API
-const getBinanceBaseUrl = (isTestnet = false) => {
-  return isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+const getBinanceBaseUrl = (isTestnet = true) => {
+  if (!isTestnet) {
+    if (!isProductionTradingAllowed()) {
+      throw new Error('[CENTRAL_GUARD_FAIL_CLOSED] Binance Production environment rejected: ALLOW_PRODUCTION_TRADING is false.');
+    }
+    return 'https://fapi.binance.com';
+  }
+  return 'https://testnet.binancefuture.com';
+};
+
+// Safe helper to read Binance API credentials server-side from environment variables ONLY:
+// Testnet: BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET
+// Production: BINANCE_API_KEY / BINANCE_API_SECRET
+const getServerBinanceCredentials = (isTestnet = true): { apiKey: string; apiSecret: string } | null => {
+  if (isTestnet) {
+    const apiKey = (process.env.BINANCE_TESTNET_API_KEY || '').trim();
+    const apiSecret = (process.env.BINANCE_TESTNET_API_SECRET || '').trim();
+    if (apiKey && apiSecret) {
+      return { apiKey, apiSecret };
+    }
+    return null;
+  } else {
+    const apiKey = (process.env.BINANCE_API_KEY || '').trim();
+    const apiSecret = (process.env.BINANCE_API_SECRET || '').trim();
+    if (apiKey && apiSecret) {
+      return { apiKey, apiSecret };
+    }
+    return null;
+  }
 };
 
 const signQuery = (queryString: string, apiSecret: string): string => {
   return crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 };
 
-// 1. Binance Connectivity Test
-app.get('/api/binance/ping', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
+const extractBinanceHeaders = (headers: Headers): Record<string, string> => {
+  const result: Record<string, string> = {};
+  headers.forEach((val, key) => {
+    result[key] = val;
+  });
+  return result;
+};
+
+// Status endpoint to check server credentials configuration without exposing secrets
+apiRouter.get('/binance/config-status', (req: Request, res: Response) => {
+  const env = getBinanceEnv();
+  const allowProd = isProductionTradingAllowed();
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  const testnetCreds = getServerBinanceCredentials(true);
+  const prodCreds = getServerBinanceCredentials(false);
+  res.json({
+    success: true,
+    environment: env,
+    allowProductionTrading: allowProd,
+    testnetConfigured: !!testnetCreds,
+    prodConfigured: !!prodCreds,
+    activeEnvironmentConfigured: isTestnet ? !!testnetCreds : (allowProd && !!prodCreds),
+    productionBlocked: !allowProd,
+  });
+});
+
+// In-Memory Authoritative Bot Session Store
+interface ServerSession {
+  sessionId: string;
+  startTime: number;
+  status: 'RUNNING' | 'STOPPED';
+  uptimeSeconds: number;
+  lastHeartbeat: number;
+}
+
+let activeServerSession: ServerSession = {
+  sessionId: `session-srv-${Date.now()}`,
+  startTime: Date.now(),
+  status: 'STOPPED',
+  uptimeSeconds: 0,
+  lastHeartbeat: Date.now(),
+};
+
+// In-Memory Order Execution Lock to prevent duplicate submissions
+const recentOrderIds = new Set<string>();
+
+// 1. Authoritative Bot Session Endpoint
+apiRouter.get('/bot/session', (req: Request, res: Response) => {
+  const now = Date.now();
+  const elapsed =
+    activeServerSession.status === 'RUNNING'
+      ? Math.max(0, Math.floor((now - activeServerSession.startTime) / 1000))
+      : activeServerSession.uptimeSeconds;
+
+  res.json({
+    success: true,
+    session: {
+      ...activeServerSession,
+      elapsedSeconds: elapsed,
+      uptimeSeconds: elapsed,
+      serverTime: now,
+    },
+  });
+});
+
+apiRouter.post('/bot/session', (req: Request, res: Response) => {
+  const { action, sessionId, startTime } = req.body;
+  const now = Date.now();
+
+  if (action === 'START') {
+    activeServerSession = {
+      sessionId: sessionId || `session-srv-${now}`,
+      startTime: startTime || now,
+      status: 'RUNNING',
+      uptimeSeconds: 0,
+      lastHeartbeat: now,
+    };
+  } else if (action === 'STOP') {
+    const finalUptime =
+      activeServerSession.status === 'RUNNING'
+        ? Math.max(0, Math.floor((now - activeServerSession.startTime) / 1000))
+        : activeServerSession.uptimeSeconds;
+    activeServerSession.status = 'STOPPED';
+    activeServerSession.uptimeSeconds = finalUptime;
+    activeServerSession.lastHeartbeat = now;
+  } else {
+    activeServerSession.lastHeartbeat = now;
+  }
+
+  const elapsed =
+    activeServerSession.status === 'RUNNING'
+      ? Math.max(0, Math.floor((now - activeServerSession.startTime) / 1000))
+      : activeServerSession.uptimeSeconds;
+
+  res.json({
+    success: true,
+    session: {
+      ...activeServerSession,
+      elapsedSeconds: elapsed,
+      uptimeSeconds: elapsed,
+      serverTime: now,
+    },
+  });
+});
+
+// 2. Binance Connectivity Ping
+apiRouter.get('/binance/ping', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
   const baseUrl = getBinanceBaseUrl(isTestnet);
   try {
     const startTime = Date.now();
     const response = await fetch(`${baseUrl}/fapi/v1/ping`);
     const latency = Date.now() - startTime;
+    const binanceHeaders = extractBinanceHeaders(response.headers);
+
+    if (binanceHeaders['x-mbx-used-weight-1m']) {
+      res.setHeader('x-mbx-used-weight-1m', binanceHeaders['x-mbx-used-weight-1m']);
+    }
+
     if (response.ok) {
-      res.json({ success: true, latency, status: 'online', isTestnet });
+      res.json({
+        success: true,
+        latency,
+        status: 'online',
+        isTestnet,
+        headers: binanceHeaders,
+      });
     } else {
-      res.status(response.status).json({ success: false, status: 'error', code: response.status });
+      res.status(response.status).json({
+        success: false,
+        status: 'error',
+        code: response.status,
+        headers: binanceHeaders,
+      });
     }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message || 'Connection failed' });
   }
 });
 
-// 2. Binance Server Time
-app.get('/api/binance/time', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
+// 2b. Binance Diagnostic Probe
+apiRouter.get('/binance/diagnostics', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
   const baseUrl = getBinanceBaseUrl(isTestnet);
+  const startTime = Date.now();
+
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/time`);
-    const data = await response.json();
-    res.json(data);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const pingPromise = fetch(`${baseUrl}/fapi/v1/ping`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+        Accept: 'application/json',
+      },
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Binance Ping Timeout (>5000ms)')), 5000)
+    );
+
+    const binanceRes = (await Promise.race([pingPromise, timeoutPromise])) as globalThis.Response;
+    const durationMs = Date.now() - startTime;
+    const headers = extractBinanceHeaders(binanceRes.headers);
+
+    res.json({
+      success: binanceRes.ok,
+      targetEndpoint: `${baseUrl}/fapi/v1/ping`,
+      statusCode: binanceRes.status,
+      statusText: binanceRes.statusText,
+      durationMs,
+      headers,
+      environment: {
+        isVercel: !!process.env.VERCEL,
+        vercelRegion: process.env.VERCEL_REGION || 'local',
+        nodeVersion: process.version,
+        timestamp: new Date().toISOString(),
+      },
+      diagnosis:
+        binanceRes.status === 451 || binanceRes.status === 403
+          ? 'Cloud datacenter IP is geo-blocked by Binance. Bot uses browser direct stream.'
+          : binanceRes.ok
+          ? 'Healthy connection from backend to Binance Futures API.'
+          : `HTTP status ${binanceRes.status} returned by Binance.`,
+    });
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    res.status(502).json({
+      success: false,
+      statusCode: 502,
+      durationMs,
+      error: err.message,
+      headers: {},
+      diagnosis: 'Failed to establish connection from backend to Binance Futures API.',
+    });
   }
 });
 
-// 3. Binance Exchange Info (USDT-M Pairs)
-app.get('/api/binance/exchangeInfo', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
+// 3. Binance Exchange Info
+apiRouter.get('/binance/exchangeInfo', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
   const baseUrl = getBinanceBaseUrl(isTestnet);
   try {
     const response = await fetch(`${baseUrl}/fapi/v1/exchangeInfo`);
@@ -101,9 +326,15 @@ app.get('/api/binance/exchangeInfo', async (req: Request, res: Response) => {
   }
 });
 
-// 4. Binance 24hr Ticker Price Change
-app.get('/api/binance/ticker24hr', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
+// 4. Binance 24hr Tickers
+apiRouter.get('/binance/ticker24hr', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
   const symbol = req.query.symbol as string;
   const baseUrl = getBinanceBaseUrl(isTestnet);
   try {
@@ -113,10 +344,7 @@ app.get('/api/binance/ticker24hr', async (req: Request, res: Response) => {
 
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'application/json',
-      },
+      headers: { Accept: 'application/json' },
     });
     clearTimeout(timeoutId);
 
@@ -130,9 +358,40 @@ app.get('/api/binance/ticker24hr', async (req: Request, res: Response) => {
   }
 });
 
-// 5. Binance Candlestick / Klines
-app.get('/api/binance/klines', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
+// 5. Binance Real Order Book Depth
+apiRouter.get('/binance/depth', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+  const symbol = (req.query.symbol as string) || 'BTCUSDT';
+  const limit = (req.query.limit as string) || '20';
+  const baseUrl = getBinanceBaseUrl(isTestnet);
+
+  try {
+    const response = await fetch(`${baseUrl}/fapi/v1/depth?symbol=${symbol}&limit=${limit}`);
+    if (!response.ok) {
+      throw new Error(`Binance depth error: ${response.status}`);
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. Binance Candlestick / Klines
+apiRouter.get('/binance/klines', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
   const symbol = (req.query.symbol as string) || 'BTCUSDT';
   const interval = (req.query.interval as string) || '15m';
   const limit = (req.query.limit as string) || '100';
@@ -141,7 +400,7 @@ app.get('/api/binance/klines', async (req: Request, res: Response) => {
   try {
     const response = await fetch(`${baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
     if (!response.ok) {
-      throw new Error(`Binance responded with ${response.status}`);
+      throw new Error(`Binance klines error: ${response.status}`);
     }
     const rawKlines = await response.json();
     const formatted = rawKlines.map((k: any) => ({
@@ -160,14 +419,25 @@ app.get('/api/binance/klines', async (req: Request, res: Response) => {
   }
 });
 
-// 6. Binance Account Balance & Position Risk (Signed)
-app.post('/api/binance/account', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet } = req.body;
-
-  if (!apiKey || !apiSecret) {
-    return res.status(400).json({ success: false, error: 'API Key and Secret are required' });
+// 7. Binance Account & Positions (Signed Server-Side)
+apiRouter.post('/binance/account', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
   }
 
+  const credentials = getServerBinanceCredentials(isTestnet);
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET' : 'BINANCE_API_KEY / BINANCE_API_SECRET'})`,
+    });
+  }
+
+  const { apiKey, apiSecret } = credentials;
   const baseUrl = getBinanceBaseUrl(isTestnet);
   const timestamp = Date.now();
   const queryString = `timestamp=${timestamp}&recvWindow=60000`;
@@ -219,8 +489,7 @@ app.post('/api/binance/account', async (req: Request, res: Response) => {
             side: parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT',
             pnlPercentage:
               parseFloat(p.entryPrice) > 0
-                ? ((parseFloat(p.markPrice) - parseFloat(p.entryPrice)) /
-                    parseFloat(p.entryPrice)) *
+                ? ((parseFloat(p.markPrice) - parseFloat(p.entryPrice)) / parseFloat(p.entryPrice)) *
                   100 *
                   parseInt(p.leverage, 10) *
                   (parseFloat(p.positionAmt) > 0 ? 1 : -1)
@@ -245,14 +514,74 @@ app.post('/api/binance/account', async (req: Request, res: Response) => {
   }
 });
 
-// 7. Binance Change Leverage
-app.post('/api/binance/leverage', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet, symbol, leverage } = req.body;
-
-  if (!apiKey || !apiSecret || !symbol || !leverage) {
-    return res.status(400).json({ success: false, error: 'Missing parameters' });
+// 8. Binance Open Orders (Reconciliation)
+apiRouter.post('/binance/openOrders', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
   }
 
+  const { symbol } = req.body;
+  const credentials = getServerBinanceCredentials(isTestnet);
+
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const timestamp = Date.now();
+  const queryParts = [`timestamp=${timestamp}`, `recvWindow=60000`];
+  if (symbol) queryParts.unshift(`symbol=${symbol}`);
+  const queryString = queryParts.join('&');
+  const signature = signQuery(queryString, apiSecret);
+
+  try {
+    const response = await fetch(`${baseUrl}/fapi/v1/openOrders?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      res.json({ success: true, orders: Array.isArray(data) ? data : [] });
+    } else {
+      res.status(response.status).json({ success: false, error: data.msg || 'Failed to fetch open orders' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 9. Binance Leverage Adjustment
+apiRouter.post('/binance/leverage', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const { symbol, leverage } = req.body;
+  const credentials = getServerBinanceCredentials(isTestnet);
+
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  if (!symbol || !leverage) {
+    return res.status(400).json({ success: false, error: 'Missing parameters (symbol, leverage)' });
+  }
+
+  const { apiKey, apiSecret } = credentials;
   const baseUrl = getBinanceBaseUrl(isTestnet);
   const timestamp = Date.now();
   const queryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${timestamp}&recvWindow=60000`;
@@ -274,20 +603,56 @@ app.post('/api/binance/leverage', async (req: Request, res: Response) => {
   }
 });
 
-// 8. Binance Order Execution (Open / Close Futures Market Order)
-app.post('/api/binance/order', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet, symbol, side, quantity, reduceOnly = false } = req.body;
+// 10. Binance Order Execution with Idempotency & Protective Orders
+apiRouter.post('/binance/order', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
 
-  if (!apiKey || !apiSecret || !symbol || !side || !quantity) {
+  const {
+    symbol,
+    side,
+    type = 'MARKET',
+    quantity,
+    stopPrice,
+    reduceOnly = false,
+    clientOrderId,
+  } = req.body;
+
+  const credentials = getServerBinanceCredentials(isTestnet);
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance order execution rejected: server credentials not configured (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  if (!symbol || !side || !quantity) {
     return res.status(400).json({ success: false, error: 'Missing required order parameters' });
   }
 
+  // Idempotency lock check
+  const idempotencyKey = clientOrderId || `${symbol}-${side}-${quantity}-${Math.floor(Date.now() / 2000)}`;
+  if (recentOrderIds.has(idempotencyKey)) {
+    return res.status(409).json({
+      success: false,
+      error: 'Duplicate order detected by server execution lock (idempotency key matched).',
+    });
+  }
+  recentOrderIds.add(idempotencyKey);
+  setTimeout(() => recentOrderIds.delete(idempotencyKey), 10000);
+
+  const { apiKey, apiSecret } = credentials;
   const baseUrl = getBinanceBaseUrl(isTestnet);
   const timestamp = Date.now();
   const params: Record<string, string> = {
     symbol,
     side: side.toUpperCase(),
-    type: 'MARKET',
+    type: type.toUpperCase(),
     quantity: quantity.toString(),
     timestamp: timestamp.toString(),
     recvWindow: '60000',
@@ -295,6 +660,14 @@ app.post('/api/binance/order', async (req: Request, res: Response) => {
 
   if (reduceOnly) {
     params.reduceOnly = 'true';
+  }
+
+  if (stopPrice) {
+    params.stopPrice = stopPrice.toString();
+  }
+
+  if (clientOrderId) {
+    params.newClientOrderId = clientOrderId;
   }
 
   const queryString = new URLSearchParams(params).toString();
@@ -320,8 +693,54 @@ app.post('/api/binance/order', async (req: Request, res: Response) => {
   }
 });
 
-// 9. Telegram Notification Proxy
-app.post('/api/telegram/send', async (req: Request, res: Response) => {
+// 11. Binance Cancel Order
+apiRouter.post('/binance/cancelOrder', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed()) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const { symbol, orderId } = req.body;
+  const credentials = getServerBinanceCredentials(isTestnet);
+
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  if (!symbol || !orderId) {
+    return res.status(400).json({ success: false, error: 'Missing required cancellation parameters' });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const timestamp = Date.now();
+  const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}&recvWindow=60000`;
+  const signature = signQuery(queryString, apiSecret);
+
+  try {
+    const response = await fetch(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+      method: 'DELETE',
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      res.json({ success: true, cancelled: data });
+    } else {
+      res.status(response.status).json({ success: false, error: data.msg || 'Cancel order failed' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 12. Telegram Alert Dispatcher
+apiRouter.post('/telegram/send', async (req: Request, res: Response) => {
   const { botToken, chatId, message } = req.body;
 
   if (!botToken || !chatId || !message) {
@@ -351,19 +770,19 @@ app.post('/api/telegram/send', async (req: Request, res: Response) => {
   }
 });
 
-// 10. AI Quant Market Analysis
-app.post('/api/ai/analyze', async (req: Request, res: Response) => {
-  const { symbol, price, change24h, rsi, volume, trend, orderbookRatio = 1.1, language = 'ar' } = req.body;
+// 13. Gemini AI Market Decision Support
+apiRouter.post('/ai/analyze', async (req: Request, res: Response) => {
+  const { symbol, price, change24h, rsi, volume, trend, orderbookRatio = 1.0, language = 'en' } = req.body;
 
   const defaultAnalysis = {
     symbol,
     signal: change24h > 0 ? 'BUY_LONG' : 'SELL_SHORT',
-    confidence: 88,
+    confidence: 76,
     rationale:
       language === 'ar'
-        ? `تحليل ذكاء اصطناعي سريع: الزوج يُظهر زخماً قوياً مع حجم تداول $${(volume / 1000000).toFixed(1)}M ونسبة طلب متفوقة (${orderbookRatio}). مستويات RSI عند ${rsi} توفر نقطة دخول ممتازة.`
-        : `AI Quant Signal: ${symbol} displays strong momentum with ${(volume / 1000000).toFixed(1)}M 24h volume. RSI at ${rsi} confirms favorable risk-reward entry.`,
-    recommendedLeverage: 20,
+        ? `تحليل سياق السوق لـ ${symbol}: مؤشر RSI عند ${rsi} مع تغير ${change24h}%، ونسبة طلب بالدفتر ${orderbookRatio}. التحليل يدعم ضبط إدارة المخاطر.`
+        : `Market context analysis for ${symbol}: RSI at ${rsi}, 24h change ${change24h}%, orderbook ratio ${orderbookRatio}. Fulfills discretionary checklist.`,
+    recommendedLeverage: 15,
     riskScore: 'MEDIUM',
   };
 
@@ -372,23 +791,26 @@ app.post('/api/ai/analyze', async (req: Request, res: Response) => {
   }
 
   try {
-    const prompt = `You are Bavly ApexAI, an institutional crypto futures quant trader.
-Analyze this USDT-M perpetual setup:
+    const prompt = `You are ApexAI, an institutional crypto futures quant trader and risk analyst.
+Analyze the following USDT-M market context:
 - Symbol: ${symbol}
-- Current Mark Price: $${price}
-- 24h Change: ${change24h}%
-- RSI (14): ${rsi}
+- Mark Price: $${price}
+- 24h Price Change: ${change24h}%
+- 14-period RSI: ${rsi}
 - 24h Volume: $${volume}
-- Trend: ${trend}
-- Bid/Ask Ratio: ${orderbookRatio}
+- Trend Alignment: ${trend}
+- Orderbook Imbalance Ratio: ${orderbookRatio}
 
-Return a valid JSON object with:
-1. "signal": "BUY_LONG" | "SELL_SHORT" | "HOLD"
-2. "confidence": number between 70 and 98
-3. "rationale": 2-3 sentence technical explanation in ${language === 'ar' ? 'Arabic' : 'English'}
-4. "recommendedLeverage": suggested leverage (e.g. 10, 20, 50)
-5. "riskScore": "LOW", "MEDIUM", or "HIGH"
-Respond with raw JSON only.`;
+Requirements:
+- Decision support only. Do not claim certainty or guaranteed returns.
+- Return a valid JSON object matching this schema:
+{
+  "signal": "BUY_LONG" | "SELL_SHORT" | "HOLD",
+  "confidence": number between 65 and 88,
+  "rationale": "2-3 concise technical sentences in ${language === 'ar' ? 'Arabic' : 'English'}",
+  "recommendedLeverage": number (10 to 20),
+  "riskScore": "LOW" | "MEDIUM" | "HIGH"
+}`;
 
     const response = await aiClient.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -396,32 +818,32 @@ Respond with raw JSON only.`;
       config: { responseMimeType: 'application/json' },
     });
 
-    if (response.text) {
+    if (response && response.text) {
       const parsed = JSON.parse(response.text);
       return res.json({ success: true, analysis: parsed });
     }
     return res.json({ success: true, analysis: defaultAnalysis });
-  } catch (error: any) {
+  } catch {
     return res.json({ success: true, analysis: defaultAnalysis });
   }
 });
 
-// 11. AI Assistant Chat
-app.post('/api/ai/chat', async (req: Request, res: Response) => {
+// 14. Gemini AI Support Chat
+apiRouter.post('/ai/chat', async (req: Request, res: Response) => {
   const { message, language = 'en' } = req.body;
 
-  const fallbackResponse =
+  const fallback =
     language === 'ar'
-      ? 'أهلاً بك في الدعم الفني الذكي لبوت Bavly ApexAI! 🤖\n\n• البوت يعمل تلقائياً وبشكل كامل عبر هذه الواجهة دون الحاجة لتشغيل أي أكواد.\n• تأكد من تفعيل خيار "Enable Futures" في إعدادات API على منصة بينانس.\n• يُنصح باختيار رافعة مالية بين 10x و 20x، وتفعيل وقف الخسارة لحماية المحفظة.'
-      : 'Welcome to Bavly ApexAI Technical Support! 🤖\n\n• The bot operates autonomously without requiring Python or coding.\n• Ensure "Enable Futures" is active on your Binance API Key.\n• We recommend 10x-20x leverage with trailing stops enabled.';
+      ? 'أهلاً بك في الدعم الفني الذكي لبوت ApexAI! 🤖\n\n• البوت يعمل في وضع المحاكاة الافتراضية (Paper Mode) افتراضياً لسلامة رأس المال.\n• يمكنك تفعيل وضع التداول الحقيقي بعد التحقق من مفاتيح Binance Futures API وتأكيد الموافقة.\n• محرك إدارة المخاطر يحدد حجم الصفقات آلياً بناءً على مسافة وقف الخسارة ونسبة المخاطرة.'
+      : 'Welcome to ApexAI Technical Support! 🤖\n\n• The bot defaults safely to Paper Trading mode.\n• Production trading requires validated Binance Futures API keys and explicit user confirmation.\n• Sizing is dynamically anchored on account equity and stop-loss distance.';
 
   if (!aiClient) {
-    return res.json({ success: true, reply: fallbackResponse });
+    return res.json({ success: true, reply: fallback });
   }
 
   try {
-    const prompt = `You are Bavly ApexAI's 24/7 Elite Technical Support & Crypto Futures Trading Assistant.
-Reply in ${language === 'ar' ? 'Arabic' : 'English'}. Concise and helpful.
+    const prompt = `You are ApexAI Technical Support for a professional Binance Futures trading application.
+Reply in ${language === 'ar' ? 'Arabic' : 'English'}. Concise, accurate and professional.
 User question: ${message}`;
 
     const response = await aiClient.models.generateContent({
@@ -429,13 +851,22 @@ User question: ${message}`;
       contents: prompt,
     });
 
-    if (response.text) {
+    if (response && response.text) {
       return res.json({ success: true, reply: response.text });
     }
-    return res.json({ success: true, reply: fallbackResponse });
-  } catch (error: any) {
-    return res.json({ success: true, reply: fallbackResponse });
+    return res.json({ success: true, reply: fallback });
+  } catch {
+    return res.json({ success: true, reply: fallback });
   }
 });
+
+// Default Express app for Vercel Serverless
+const app = express();
+app.use(express.json());
+app.use((_req, res, next) => {
+  res.setHeader('Access-Control-Expose-Headers', '*');
+  next();
+});
+app.use('/api', apiRouter);
 
 export default app;

@@ -1,12 +1,22 @@
-import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
-import dotenv from 'dotenv';
-import crypto from 'crypto';
+import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
-
-dotenv.config();
+import { createServer as createViteServer } from 'vite';
+import { apiRouter } from './api/index';
+import { workerEngine, SAFE_BOOT_MODE } from './src/worker/workerEngine';
+import { positionAdoptionService } from './src/worker/positionAdoption';
+import { positionStateSync } from './src/worker/positionStateSync';
+import { testnetExecutionBridge } from './src/worker/testnetExecutionBridge';
+import { executionPreflight } from './src/worker/executionPreflight';
+import { testnetExecutionAdapter } from './src/worker/testnetExecutionAdapter';
+import { executionPolicy } from './src/worker/executionPolicy';
+import { executionReconciliationEngine } from './src/worker/executionReconciliation';
+import { autonomousTradingPipeline } from './src/worker/autonomousPipeline';
+import { autonomousPilotEngine } from './src/worker/autonomousPilotEngine';
+import { runNaturalOpportunityVerification } from './src/worker/naturalOpportunityVerification';
+import { runHardeningAudit } from './src/worker/runHardeningAudit';
+import { runFinalProofAudit } from './src/worker/runFinalProofAudit';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,452 +26,396 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
-// Initialize Google Gemini AI if API key is provided
-let aiClient: GoogleGenAI | null = null;
-if (process.env.GEMINI_API_KEY) {
+// Expose all response headers for client diagnostics
+app.use((_req, res, next) => {
+  res.setHeader('Access-Control-Expose-Headers', '*');
+  next();
+});
+
+// Mount Worker Control API Routes (Authoritative Background Engine)
+app.get('/api/worker/status', async (_req, res) => {
   try {
-    aiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
+    const status = await workerEngine.getStatusAsync();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to get worker status' });
+  }
+});
+
+app.post('/api/worker/start', async (_req, res) => {
+  try {
+    const result = await workerEngine.requestBotStart();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to start worker' });
+  }
+});
+
+app.post('/api/worker/stop', async (_req, res) => {
+  try {
+    const result = await workerEngine.requestBotStop();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to stop worker' });
+  }
+});
+
+// Mount READ-ONLY Account Reconciliation endpoint for inspection
+app.get('/api/worker/reconciliation', async (_req, res) => {
+  try {
+    const result = await workerEngine.reconcileAccountState();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to reconcile account state' });
+  }
+});
+
+// Mount READ-ONLY Position Adoption inspection endpoint
+app.get('/api/worker/position-adoption', async (_req, res) => {
+  try {
+    const report = await positionAdoptionService.evaluateCurrentAdoptionState();
+    res.json({
+      status: report.status,
+      remotePositions: report.remotePositions.map((p) => ({
+        symbol: p.symbol,
+        side: p.side,
+        quantity: p.quantity,
+        entryPrice: p.entryPrice,
+      })),
+      localPositionCount: report.localPositionCount,
+      candidateCount: report.candidateCount,
+      alreadyTrackedCount: report.alreadyTrackedCount,
+      readOnly: report.readOnly,
+      executionPerformed: report.executionPerformed,
+      stateModified: report.stateModified,
+      warnings: report.warnings,
+      timestamp: report.timestamp,
     });
-  } catch (err) {
-    console.error('Failed to initialize Gemini AI client:', err);
-  }
-}
-
-// Helpers for Binance API
-const getBinanceBaseUrl = (isTestnet = false) => {
-  return isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
-};
-
-const signQuery = (queryString: string, apiSecret: string): string => {
-  return crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
-};
-
-// 1. Binance Connectivity Test
-app.get('/api/binance/ping', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  try {
-    const startTime = Date.now();
-    const response = await fetch(`${baseUrl}/fapi/v1/ping`);
-    const latency = Date.now() - startTime;
-    if (response.ok) {
-      res.json({ success: true, latency, status: 'online', isTestnet });
-    } else {
-      res.status(response.status).json({ success: false, status: 'error', code: response.status });
-    }
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Connection failed' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to evaluate position adoption' });
   }
 });
 
-// 2. Binance Server Time
-app.get('/api/binance/time', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+// Mount Persistence-Only Position Adoption apply endpoint (ZERO Binance Orders)
+app.post('/api/worker/position-adoption/apply', async (_req, res) => {
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/time`);
-    const data = await response.json();
-    res.json(data);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const result = await positionAdoptionService.validateAndAdoptRemotePositions();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to apply position adoption' });
   }
 });
 
-// 3. Binance Exchange Info (USDT-M Pairs)
-app.get('/api/binance/exchangeInfo', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+// Mount READ-ONLY Position State Diagnostic endpoint
+app.get('/api/worker/position-state', async (_req, res) => {
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/exchangeInfo`);
-    if (!response.ok) {
-      throw new Error(`Binance responded with ${response.status}`);
-    }
-    const data = await response.json();
-    // Filter only USDT-M active perpetual futures
-    const symbols = (data.symbols || [])
-      .filter((s: any) => s.quoteAsset === 'USDT' && s.status === 'TRADING' && s.contractType === 'PERPETUAL')
-      .map((s: any) => {
-        const lotFilter = s.filters?.find((f: any) => f.filterType === 'LOT_SIZE') || {};
-        const priceFilter = s.filters?.find((f: any) => f.filterType === 'PRICE_FILTER') || {};
-        const minNotionalFilter = s.filters?.find((f: any) => f.filterType === 'MIN_NOTIONAL') || {};
-
-        return {
-          symbol: s.symbol,
-          baseAsset: s.baseAsset,
-          quoteAsset: s.quoteAsset,
-          pricePrecision: s.pricePrecision,
-          quantityPrecision: s.quantityPrecision,
-          minQty: lotFilter.minQty ? parseFloat(lotFilter.minQty) : 0.001,
-          stepSize: lotFilter.stepSize ? parseFloat(lotFilter.stepSize) : 0.001,
-          tickSize: priceFilter.tickSize ? parseFloat(priceFilter.tickSize) : 0.01,
-          minNotional: minNotionalFilter.notional ? parseFloat(minNotionalFilter.notional) : 5,
-        };
-      });
-
-    res.json({ success: true, count: symbols.length, symbols });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    const diagnostic = await positionStateSync.getPositionStateDiagnostic();
+    res.json(diagnostic);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read position state diagnostic' });
   }
 });
 
-// 4. Binance 24hr Ticker Price Change
-app.get('/api/binance/ticker24hr', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
-  const symbol = req.query.symbol as string;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+// Mount READ-ONLY Execution Plan Diagnostic endpoint
+app.get('/api/worker/execution-plan', (_req, res) => {
   try {
-    const url = symbol ? `${baseUrl}/fapi/v1/ticker/24hr?symbol=${symbol}` : `${baseUrl}/fapi/v1/ticker/24hr`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'application/json',
-      },
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Binance responded with ${response.status}`);
-    }
-    const data = await response.json();
-    res.json(data);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 5. Binance Candlestick / Klines
-app.get('/api/binance/klines', async (req: Request, res: Response) => {
-  const isTestnet = req.query.testnet === 'true';
-  const symbol = (req.query.symbol as string) || 'BTCUSDT';
-  const interval = (req.query.interval as string) || '15m';
-  const limit = (req.query.limit as string) || '100';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-
-  try {
-    const response = await fetch(`${baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
-    if (!response.ok) {
-      throw new Error(`Binance responded with ${response.status}`);
-    }
-    const rawKlines = await response.json();
-    const formatted = rawKlines.map((k: any) => ({
-      time: k[0],
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5]),
-      quoteVolume: parseFloat(k[7]),
-      tradesCount: k[8],
-    }));
-    res.json(formatted);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 6. Binance Account Balance & Position Risk (Signed)
-app.post('/api/binance/account', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet } = req.body;
-
-  if (!apiKey || !apiSecret) {
-    return res.status(400).json({ success: false, error: 'API Key and Secret are required' });
-  }
-
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  const timestamp = Date.now();
-  const queryString = `timestamp=${timestamp}&recvWindow=60000`;
-  const signature = signQuery(queryString, apiSecret);
-
-  try {
-    const [accountRes, positionRes] = await Promise.all([
-      fetch(`${baseUrl}/fapi/v2/account?${queryString}&signature=${signature}`, {
-        headers: { 'X-MBX-APIKEY': apiKey },
-      }),
-      fetch(`${baseUrl}/fapi/v2/positionRisk?${queryString}&signature=${signature}`, {
-        headers: { 'X-MBX-APIKEY': apiKey },
-      }),
-    ]);
-
-    const accountData = await accountRes.json();
-    const positionData = await positionRes.json();
-
-    if (!accountRes.ok) {
-      return res.status(accountRes.status).json({
-        success: false,
-        error: accountData.msg || 'Binance Account API error',
-        code: accountData.code,
+    const plan = testnetExecutionBridge.getLastExecutionPlan();
+    if (!plan) {
+      return res.json({
+        available: false,
+        reason: 'NO_EXECUTION_PLAN',
       });
     }
+    res.json({
+      available: true,
+      plan,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read execution plan' });
+  }
+});
 
-    // Extract USDT asset balance
-    const usdtAsset = (accountData.assets || []).find((a: any) => a.asset === 'USDT') || {
-      walletBalance: '0',
-      availableBalance: '0',
-      unrealizedProfit: '0',
-      marginBalance: '0',
-      initialMargin: '0',
-      maintMargin: '0',
-    };
+// Mount READ-ONLY Execution Plan Dry-Run Generation endpoint (ZERO Binance Orders)
+app.post('/api/worker/execution-plan/dry-run', async (req, res) => {
+  try {
+    const result = await testnetExecutionBridge.createExecutionPlan(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to evaluate execution plan' });
+  }
+});
 
-    // Filter active open positions (positionAmt != 0)
-    const activePositions = Array.isArray(positionData)
-      ? positionData
-          .filter((p: any) => parseFloat(p.positionAmt) !== 0)
-          .map((p: any) => ({
-            symbol: p.symbol,
-            positionAmt: parseFloat(p.positionAmt),
-            entryPrice: parseFloat(p.entryPrice),
-            markPrice: parseFloat(p.markPrice),
-            unrealizedProfit: parseFloat(p.unRealizedProfit),
-            liquidationPrice: parseFloat(p.liquidationPrice),
-            leverage: parseInt(p.leverage, 10),
-            marginType: p.marginType,
-            isolatedMargin: parseFloat(p.isolatedMargin || '0'),
-            side: parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT',
-            pnlPercentage:
-              parseFloat(p.entryPrice) > 0
-                ? ((parseFloat(p.markPrice) - parseFloat(p.entryPrice)) /
-                    parseFloat(p.entryPrice)) *
-                  100 *
-                  parseInt(p.leverage, 10) *
-                  (parseFloat(p.positionAmt) > 0 ? 1 : -1)
-                : 0,
-          }))
-      : [];
+// Mount READ-ONLY Execution Preflight Gate endpoint
+app.get('/api/worker/execution-preflight', async (_req, res) => {
+  try {
+    const plan = testnetExecutionBridge.getLastExecutionPlan();
+    if (!plan) {
+      return res.json({
+        available: false,
+        reason: 'NO_EXECUTION_PLAN',
+      });
+    }
+    const preflightResult = await executionPreflight.validate(plan);
+    res.json({
+      available: true,
+      preflightResult,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to run execution preflight' });
+  }
+});
+
+// Mount READ-ONLY Execution Status endpoint
+app.get('/api/worker/execution-status', (_req, res) => {
+  try {
+    const auth = testnetExecutionAdapter.getActiveAuthorization();
+    res.json({
+      enabled: testnetExecutionAdapter.isEnabled(),
+      safeBoot: SAFE_BOOT_MODE,
+      armed: testnetExecutionAdapter.isArmed(),
+      authorization: auth
+        ? {
+            authorizationId: auth.authorizationId,
+            authorizedSymbol: auth.authorizedSymbol,
+            authorizedSide: auth.authorizedSide,
+            authorizedQuantity: auth.authorizedQuantity,
+            authorizedEntryPrice: auth.authorizedEntryPrice,
+            planFingerprint: auth.planFingerprint,
+            singleUse: auth.singleUse,
+            consumed: auth.consumed,
+          }
+        : null,
+      authorizationExpiry: auth?.expiresAt ?? null,
+      lastExecutionResult: testnetExecutionAdapter.getLastResult(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read execution status' });
+  }
+});
+
+// Mount READ-ONLY Execution Policy Diagnostic endpoint
+app.get('/api/worker/execution-policy', (_req, res) => {
+  try {
+    const config = executionPolicy.getConfig();
+    res.json({
+      configured: true,
+      policy: config,
+      defaults: {
+        safeBootMode: SAFE_BOOT_MODE,
+        executionEnabled: testnetExecutionAdapter.isEnabled(),
+        armed: testnetExecutionAdapter.isArmed(),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read execution policy' });
+  }
+});
+
+// Mount READ-ONLY Execution Reconciliation Diagnostic endpoint
+app.get('/api/worker/execution-reconciliation', async (_req, res) => {
+  try {
+    const report = await executionReconciliationEngine.reconcile();
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to perform execution reconciliation' });
+  }
+});
+
+// Mount READ-ONLY Autonomous Pipeline Diagnostic endpoint
+app.get('/api/worker/autonomous-pipeline-diagnostics', async (_req, res) => {
+  try {
+    const state = await workerEngine.getPersistentState();
+    const reconciliationReport = await executionReconciliationEngine.reconcile();
+    const capitalProfile = state?.settings?.capitalProfile;
 
     res.json({
-      success: true,
-      balance: {
-        totalWalletBalance: parseFloat(accountData.totalWalletBalance || usdtAsset.walletBalance || '0'),
-        availableBalance: parseFloat(accountData.availableBalance || usdtAsset.availableBalance || '0'),
-        totalUnrealizedProfit: parseFloat(accountData.totalUnrealizedProfit || usdtAsset.unrealizedProfit || '0'),
-        totalMarginBalance: parseFloat(accountData.totalMarginBalance || usdtAsset.marginBalance || '0'),
-        totalInitialMargin: parseFloat(accountData.totalInitialMargin || usdtAsset.initialMargin || '0'),
-        totalMaintMargin: parseFloat(accountData.totalMaintMargin || usdtAsset.maintMargin || '0'),
+      timestamp: Date.now(),
+      readOnly: true,
+      testnetOnly: true,
+      safeBootMode: SAFE_BOOT_MODE,
+      executionEnabled: testnetExecutionAdapter.isEnabled(),
+      armed: testnetExecutionAdapter.isArmed(),
+      botRunning: state?.botRunning ?? false,
+      currentOpenPositionsCount: state?.trackedPositions?.length ?? 0,
+      openPositions: (state?.trackedPositions || []).map((p: any) => ({
+        symbol: p.symbol,
+        side: p.side,
+        quantity: p.quantity,
+        entryPrice: p.entryPrice,
+        reconciliationStatus: p.reconciliationStatus,
+      })),
+      maxOpenPositions: capitalProfile?.maxOpenPositions ?? 4,
+      riskPerTradePercent: capitalProfile?.riskPerTradePercent ?? 1.0,
+      reconciliation: {
+        totalTransactionsChecked: reconciliationReport.totalTransactionsChecked,
+        requiringManualReviewCount: reconciliationReport.requiringManualReviewCount,
+        reconciledNoPositionCount: reconciliationReport.reconciledNoPositionCount,
+        reconciledPositionPresentCount: reconciliationReport.reconciledPositionPresentCount,
       },
-      positions: activePositions,
     });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read autonomous pipeline diagnostics' });
   }
 });
 
-// 7. Binance Change Leverage
-app.post('/api/binance/leverage', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet, symbol, leverage } = req.body;
-
-  if (!apiKey || !apiSecret || !symbol || !leverage) {
-    return res.status(400).json({ success: false, error: 'Missing parameters' });
-  }
-
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  const timestamp = Date.now();
-  const queryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${timestamp}&recvWindow=60000`;
-  const signature = signQuery(queryString, apiSecret);
-
+// Mount READ-ONLY Autonomous Pilot Status endpoint
+app.get('/api/worker/pilot-status', async (_req, res) => {
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/leverage?${queryString}&signature=${signature}`, {
-      method: 'POST',
-      headers: { 'X-MBX-APIKEY': apiKey },
+    const status = await autonomousPilotEngine.getStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to read pilot status' });
+  }
+});
+
+// Pilot Control: Arm Pilot
+app.post('/api/worker/pilot/arm', (_req, res) => {
+  try {
+    const result = autonomousPilotEngine.arm();
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Disarm Pilot
+app.post('/api/worker/pilot/disarm', (_req, res) => {
+  try {
+    autonomousPilotEngine.disarm();
+    res.json({ success: true, message: 'Pilot disarmed.' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Start Autonomous Pilot
+app.post('/api/worker/pilot/start', async (_req, res) => {
+  try {
+    const result = await autonomousPilotEngine.start();
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Stop Autonomous Pilot
+app.post('/api/worker/pilot/stop', (_req, res) => {
+  try {
+    autonomousPilotEngine.stop();
+    res.json({ success: true, message: 'Pilot stopped.' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Enable Pilot Mode
+app.post('/api/worker/pilot/enable', (_req, res) => {
+  try {
+    autonomousPilotEngine.setPilotEnabled(true);
+    res.json({ success: true, pilotEnabled: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Disable Pilot Mode
+app.post('/api/worker/pilot/disable', (_req, res) => {
+  try {
+    autonomousPilotEngine.setPilotEnabled(false);
+    res.json({ success: true, pilotEnabled: false });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pilot Control: Clear Manual Review
+app.post('/api/worker/pilot/clear-manual-review', (_req, res) => {
+  try {
+    autonomousPilotEngine.clearManualReview();
+    res.json({ success: true, manualReviewRequired: false });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Run Natural Opportunity Verification Gate
+app.all(['/api/worker/natural-verification', '/api/worker/natural-verification/run'], async (_req, res) => {
+  try {
+    const report = await runNaturalOpportunityVerification();
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({
+      verdict: 'FAIL — EXECUTION_ERROR',
+      summary: `Failed to execute natural opportunity verification: ${err.message}`,
+      error: err.message,
     });
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: data.msg, code: data.code });
-    }
-    res.json({ success: true, data });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 8. Binance Place Order (MARKET / LIMIT Futures Order)
-app.post('/api/binance/order', async (req: Request, res: Response) => {
-  const { apiKey, apiSecret, isTestnet, symbol, side, type = 'MARKET', quantity, reduceOnly = false } = req.body;
-
-  if (!apiKey || !apiSecret || !symbol || !side || !quantity) {
-    return res.status(400).json({ success: false, error: 'Missing required order parameters' });
-  }
-
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  const timestamp = Date.now();
-  let queryString = `symbol=${symbol}&side=${side}&type=${type}&quantity=${quantity}&timestamp=${timestamp}&recvWindow=60000`;
-  if (reduceOnly) {
-    queryString += `&reduceOnly=true`;
-  }
-  const signature = signQuery(queryString, apiSecret);
-
+// Run Final Hardening Audit (C1 - C31)
+app.all(['/api/worker/hardening-audit', '/api/worker/hardening-audit/run'], async (_req, res) => {
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
-      method: 'POST',
-      headers: { 'X-MBX-APIKEY': apiKey },
+    const report = await runHardeningAudit();
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({
+      verdict: 'FAIL',
+      summary: `Hardening audit failed: ${err.message}`,
+      error: err.message,
     });
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: data.msg, code: data.code });
-    }
-    res.json({ success: true, order: data });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 9. Telegram Notification Dispatch
-app.post('/api/telegram/send', async (req: Request, res: Response) => {
-  const { botToken, chatId, message } = req.body;
-
-  if (!botToken || !chatId || !message) {
-    return res.status(400).json({ success: false, error: 'Bot token, chat ID, and message are required' });
-  }
-
+// Run Final Proof Audit (Real Process Restart + 527/527 Coverage)
+app.all(['/api/worker/final-proof-audit', '/api/worker/final-proof-audit/run'], async (_req, res) => {
   try {
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: 'HTML',
-      }),
+    const report = await runFinalProofAudit();
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({
+      verdict: 'FAIL',
+      summary: `Final proof audit failed: ${err.message}`,
+      error: err.message,
     });
-
-    const data = await response.json();
-    if (data.ok) {
-      res.json({ success: true, messageId: data.result?.message_id });
-    } else {
-      res.status(400).json({ success: false, error: data.description });
-    }
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Robust Gemini Content Generator with multi-model fallback (handles 503 High Demand spikes)
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash'];
-
-async function generateContentWithFallback(prompt: string, config?: any): Promise<string | null> {
-  if (!aiClient) return null;
-
-  for (const model of FALLBACK_MODELS) {
-    try {
-      // Race against a 2.5-second timeout per model
-      const callPromise = aiClient.models.generateContent({
-        model,
-        contents: prompt,
-        config,
-      });
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('TIMEOUT')), 2500)
-      );
-
-      const response = await Promise.race([callPromise, timeoutPromise]);
-      if (response && response.text) {
-        return response.text;
-      }
-    } catch {
-      // If 503 or 404 or TIMEOUT, continue smoothly to next valid model
-      continue;
-    }
-  }
-  return null;
-}
-
-// 10. Gemini AI Market Analysis & Trade Recommendation
-app.post('/api/ai/analyze', async (req: Request, res: Response) => {
-  const { symbol, price, change24h, rsi, volume, trend, orderbookRatio, language = 'en' } = req.body;
-
-  const defaultAnalysis = {
-    signal: change24h >= 0 ? 'BUY_LONG' : 'SELL_SHORT',
-    confidence: Math.min(96, Math.max(78, Math.round(80 + Math.abs(change24h || 1) * 1.5 + ((rsi || 50) > 50 ? 5 : -5)))),
-    rationale:
-      language === 'ar'
-        ? `تحليل خوارزمي ذكي لـ ${symbol}: مؤشر القوة النسبية RSI عند ${rsi || 50} وتغير 24h بنسبة ${change24h || 0}% مع تدفق سيولة إيجابي.`
-        : `Algorithmic analysis for ${symbol}: RSI at ${rsi || 50}, 24h price momentum at ${change24h || 0}% with healthy orderflow.`,
-    recommendedLeverage: (change24h || 0) > 5 ? 15 : 20,
-    riskScore: 'LOW_TO_MEDIUM',
-  };
-
-  if (!aiClient) {
-    return res.json({ success: true, analysis: defaultAnalysis });
-  }
-
+// Run Scaling Proof Result Inspection Endpoint
+app.get('/api/worker/scaling-proof', (_req, res) => {
   try {
-    const prompt = `You are ApexAI, an elite algorithmic crypto futures trading quant. Analyze the following real-time Binance Futures market data:
-Symbol: ${symbol}
-Current Price: $${price}
-24h Price Change: ${change24h}%
-14-period RSI: ${rsi}
-24h Volume: $${volume}
-Market Trend: ${trend}
-Orderbook Buy/Sell Ratio: ${orderbookRatio}
-Requested Language: ${language}
-
-Provide a concise, JSON formatted response with:
-1. "signal": "BUY_LONG" or "SELL_SHORT" or "NEUTRAL"
-2. "confidence": number between 70 and 98 (win probability %)
-3. "rationale": 2-3 sentence technical explanation in ${language === 'ar' ? 'Arabic' : 'English'} explaining momentum, RSI divergence, and risk.
-4. "recommendedLeverage": suggested leverage (e.g. 10, 20, 50)
-5. "riskScore": "LOW", "MEDIUM", or "HIGH"
-Respond with raw JSON only.`;
-
-    const rawText = await generateContentWithFallback(prompt, {
-      responseMimeType: 'application/json',
-    });
-
-    if (rawText) {
-      const parsed = JSON.parse(rawText);
-      return res.json({ success: true, analysis: parsed });
+    const resultPath = path.resolve(process.cwd(), 'data/scaling_proof_result.json');
+    if (!fs.existsSync(resultPath)) {
+      return res.status(404).json({ error: 'Scaling proof result not found.' });
     }
-    return res.json({ success: true, analysis: defaultAnalysis });
-  } catch (error: any) {
-    console.error('Gemini AI analysis error:', error);
-    return res.json({ success: true, analysis: defaultAnalysis });
+    const data = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 11. AI Assistant Chat (Arabic / English 24/7 technical support)
-app.post('/api/ai/chat', async (req: Request, res: Response) => {
-  const { message, language = 'en' } = req.body;
-
-  const fallbackResponse =
-    language === 'ar'
-      ? 'أهلاً بك في الدعم الفني الذكي لبوت ApexAI! 🤖\n\n• **تشغيل البوت بدون كود:** البوت يعمل تلقائياً وبشكل كامل عبر هذه الواجهة دون الحاجة لتشغيل أي أكواد أو بايثون.\n• **الربط مع Binance Futures:** يمكنك إدخال مفتاح الـ API والـ Secret Key في نافذة الإعدادات والتأكد من تفعيل خيار "Enable Futures" في إعدادات حسابك على بينانس.\n• **إدارة المخاطر:** يُنصح باختيار رافعة مالية بين 10x و 20x، وتفعيل وقف الخسارة (Stop Loss) عند 1% إلى 1.5% لتفادي التصفية.\n\nهل تود مساعدة في ضبط أي إعداد محدد؟'
-      : 'Welcome to ApexAI 24/7 Technical Support! 🤖\n\n• **No-Code Operation:** The bot runs fully autonomously through this web app without requiring Python or coding.\n• **Binance Futures API:** Enter your API Key and Secret Key in Settings. Ensure "Enable Futures" is checked in your Binance API Management.\n• **Risk Management:** We recommend starting with 10x-20x leverage and keeping stop-losses at 1.0%-1.5% to safeguard your margin.\n\nHow else can I assist your trading setup?';
-
-  if (!aiClient) {
-    return res.json({ success: true, reply: fallbackResponse });
-  }
-
+// Run Continuous Autonomous Worker Proof Result Inspection Endpoint
+app.get('/api/worker/caw-proof', (_req, res) => {
   try {
-    const systemPrompt = `You are ApexAI's 24/7 Elite Technical Support & Crypto Futures Trading Assistant.
-You specialize in Binance USDT-M Futures, leverage (1x to 150x), margin management (Cross vs Isolated), Stop-Loss/Take-Profit calculations, API key security, and algorithmic trading strategies.
-Reply in ${language === 'ar' ? 'Arabic' : 'English'}. Be concise, highly professional, encouraging, and clear.`;
-
-    const prompt = `${systemPrompt}\nUser question: ${message}`;
-    const replyText = await generateContentWithFallback(prompt);
-
-    if (replyText) {
-      return res.json({ success: true, reply: replyText });
+    const resultPath = path.resolve(process.cwd(), 'data/caw_proof_result.json');
+    if (!fs.existsSync(resultPath)) {
+      return res.status(404).json({ error: 'Continuous autonomous worker proof result not found.' });
     }
-    return res.json({ success: true, reply: fallbackResponse });
-  } catch (error: any) {
-    console.error('Gemini chat error, returning helpful response:', error);
-    return res.json({ success: true, reply: fallbackResponse });
+    const data = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Setup Vite or static serving
+// Mount Centralized Backend API Router
+app.use('/api', apiRouter);
+
 async function startServer() {
+  // 1. Initialize Persistent Worker Entry Point in SAFE BOOT MODE
+  await workerEngine.start();
+
+  // 2. Mount Vite middleware or static assets
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -475,9 +429,24 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ApexAI Futures Server running on port ${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[ApexAI V2] Futures Server running on port ${PORT}`);
   });
+
+  // 3. Graceful Shutdown handlers for SIGINT and SIGTERM
+  let isShuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`[SERVER] Received ${signal}. Initiating graceful shutdown...`);
+    await workerEngine.stop();
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 startServer();

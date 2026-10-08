@@ -1,0 +1,238 @@
+{
+  "verdict": "PASS",
+  "processA": {
+    "pid": 1022,
+    "terminated": true
+  },
+  "processB": {
+    "pid": 1064
+  },
+  "coverage": {
+    "universeDiscovered": 528,
+    "eligibleUniverse": 527,
+    "uniqueEvaluated": 527,
+    "coveragePercent": 100,
+    "hookusdtEvaluated": 0,
+    "cyclesCompleted": 1,
+    "totalBatches": 11
+  },
+  "restart": {
+    "processAPid": 1022,
+    "processATerminated": true,
+    "processBPid": 1064,
+    "stateRestored": true,
+    "coverageCursorRestored": 250,
+    "transactionRestored": "txn-nat-1791027435497-mw8r"
+  },
+  "replay": {
+    "replayAttempted": true,
+    "replayBlocked": true,
+    "failureCode": "EXECUTION_AUTHORIZATION_ALREADY_CONSUMED",
+    "duplicateEntry": 0,
+    "duplicateSl": 0,
+    "duplicateTp": 0,
+    "additionalBinanceRequests": 0
+  },
+  "nativeBinance": {
+    "entryOrderId": "337222987",
+    "entryStatus": "FILLED",
+    "entryExecutedQty": 20596.7,
+    "entryAvgPrice": 1.0694999,
+    "slAlgoId": "1000000227331663",
+    "slStatus": "CANCELED",
+    "slStopPrice": 1.06,
+    "tpAlgoId": "1000000227331668",
+    "tpStatus": "CANCELED",
+    "tpStopPrice": 1.1,
+    "actualPosition": 0
+  },
+  "safety": {
+    "productionRequests": 0,
+    "productionOrders": 0,
+    "hookusdtChanged": false,
+    "orphanOrders": 0,
+    "finalPosition": 0
+  },
+  "testMatrix": [
+    {
+      "code": "F1",
+      "name": "Full eligible universe discovered",
+      "passed": true,
+      "details": "Discovered: 528, Eligible: 527"
+    },
+    {
+      "code": "F2",
+      "name": "HOOKUSDT excluded",
+      "passed": true,
+      "details": "HOOKUSDT excluded from eligible universe list"
+    },
+    {
+      "code": "F3",
+      "name": "First coverage batches evaluated",
+      "passed": true,
+      "details": "Batches 1..5 in Process A evaluated 250 unique symbols"
+    },
+    {
+      "code": "F4",
+      "name": "Persistent coverage state",
+      "passed": true,
+      "details": "Cursor saved at 250 by Process A and restored by Process B"
+    },
+    {
+      "code": "F5",
+      "name": "Coverage survives restart",
+      "passed": true,
+      "details": "Process A (PID 1022) terminated, Process B (PID 1064) resumed from cursor 250"
+    },
+    {
+      "code": "F6",
+      "name": "Unique-symbol tracking",
+      "passed": true,
+      "details": "Set<string> maintained across processes, size = 527"
+    },
+    {
+      "code": "F7",
+      "name": "527/527 unique symbols evaluated",
+      "passed": true,
+      "details": "Exactly 527/527 unique symbols passed through StrategyEngine"
+    },
+    {
+      "code": "F8",
+      "name": "Coverage = 100%",
+      "passed": true,
+      "details": "Coverage: 100%"
+    },
+    {
+      "code": "F9",
+      "name": "HOOKUSDT evaluated = 0",
+      "passed": true,
+      "details": "HOOKUSDT evaluations: 0"
+    },
+    {
+      "code": "F10",
+      "name": "Real process termination",
+      "passed": true,
+      "details": "Process A (PID 1022) verified terminated"
+    },
+    {
+      "code": "F11",
+      "name": "New process started",
+      "passed": true,
+      "details": "Process B running with distinct OS PID 1064"
+    },
+    {
+      "code": "F12",
+      "name": "State restored from disk",
+      "passed": true,
+      "details": "State loaded from data/state.json and data/pilot_coverage_state.json"
+    },
+    {
+      "code": "F13",
+      "name": "Same transaction restored",
+      "passed": true,
+      "details": "Transaction ID: txn-nat-1791027435497-mw8r"
+    },
+    {
+      "code": "F14",
+      "name": "Same fingerprint restored",
+      "passed": true,
+      "details": "Fingerprint: d54778f979e3797fef545bbdb91290abd7e5a566a54e23c9691de11df33fdfe2"
+    },
+    {
+      "code": "F15",
+      "name": "Same authorization restored",
+      "passed": true,
+      "details": "Authorization ID: auth-1791027435496-a8a255c5"
+    },
+    {
+      "code": "F16",
+      "name": "Replay blocked",
+      "passed": true,
+      "details": "Replay failed with: EXECUTION_AUTHORIZATION_ALREADY_CONSUMED"
+    },
+    {
+      "code": "F17",
+      "name": "Duplicate entry = 0",
+      "passed": true,
+      "details": "Entry request blocked prior to dispatch"
+    },
+    {
+      "code": "F18",
+      "name": "Duplicate SL = 0",
+      "passed": true,
+      "details": "SL request blocked prior to dispatch"
+    },
+    {
+      "code": "F19",
+      "name": "Duplicate TP = 0",
+      "passed": true,
+      "details": "TP request blocked prior to dispatch"
+    },
+    {
+      "code": "F20",
+      "name": "Additional Binance order requests = 0",
+      "passed": true,
+      "details": "Dispatched order requests in replay: 0"
+    },
+    {
+      "code": "F21",
+      "name": "Native Binance state matches persisted state",
+      "passed": true,
+      "details": "Entry FILLED (20596.7), SL CANCELED, TP CANCELED"
+    },
+    {
+      "code": "F22",
+      "name": "Position reconciled",
+      "passed": true,
+      "details": "FILUSDT position quantity on exchange = 0"
+    },
+    {
+      "code": "F23",
+      "name": "Orphan orders = 0",
+      "passed": true,
+      "details": "FILUSDT open orders on exchange = 0"
+    },
+    {
+      "code": "F24",
+      "name": "HOOKUSDT unchanged",
+      "passed": true,
+      "details": "HOOKUSDT side=SHORT, qty=376509.1, entry=0.01325 (UNTOUCHED)"
+    },
+    {
+      "code": "F25",
+      "name": "Production requests = 0",
+      "passed": true,
+      "details": "0 requests sent to production Binance"
+    },
+    {
+      "code": "F26",
+      "name": "Production orders = 0",
+      "passed": true,
+      "details": "0 orders sent to production Binance"
+    },
+    {
+      "code": "F27",
+      "name": "Final SAFE/STOPPED state",
+      "passed": true,
+      "details": "SAFE_BOOT_MODE=true, pilotEnabled=false, pilotArmed=false"
+    },
+    {
+      "code": "F28",
+      "name": "No secrets exposed",
+      "passed": true,
+      "details": "Zero secrets exposed in logs, outputs, or state files"
+    },
+    {
+      "code": "F29",
+      "name": "npm run lint PASS",
+      "passed": true,
+      "details": "tsc --noEmit passed with 0 errors"
+    },
+    {
+      "code": "F30",
+      "name": "npm run build PASS",
+      "passed": true,
+      "details": "Vite production build passed in 1.38s"
+    }
+  ]
+}
