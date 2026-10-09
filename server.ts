@@ -22,7 +22,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = parseInt(process.env.SERVER_PORT || process.env.PORT || '3000', 10);
+const HOST = '0.0.0.0';
 
 app.use(express.json());
 
@@ -429,8 +430,8 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[ApexAI V2] Futures Server running on port ${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`[ApexAI V2] Futures Server running on ${HOST}:${PORT}`);
   });
 
   // 3. Graceful Shutdown handlers for SIGINT and SIGTERM
