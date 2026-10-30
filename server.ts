@@ -22,7 +22,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = parseInt(process.env.SERVER_PORT || process.env.PORT || '3000', 10);
+
+function resolvePort(): number {
+  // 1. Check CLI arguments (e.g. AI Studio dev server passing --port 3000)
+  const portArgIdx = process.argv.findIndex((arg) => arg === '--port' || arg === '-p');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const parsed = parseInt(process.argv[portArgIdx + 1], 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+
+  // 2. In Google AI Studio preview environment, default app port is 3000 (proxy target)
+  if (process.env.APPLET_ID) {
+    return parseInt(process.env.DEFAULT_APP_PORT || '3000', 10);
+  }
+
+  // 3. For Botkeep and external hosts, read SERVER_PORT first, then PORT, then default to 3000
+  const envPort = process.env.SERVER_PORT || process.env.PORT;
+  if (envPort) {
+    const parsed = parseInt(envPort, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+
+  return 3000;
+}
+
+const PORT = resolvePort();
 const HOST = '0.0.0.0';
 
 app.use(express.json());

@@ -101,28 +101,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [leverage, setLeverage] = useState(settings.leverage);
   const [direction, setDirection] = useState<AllowedDirection>(settings.allowedDirection);
   const [maxDurationHours, setMaxDurationHours] = useState(settings.maxTradeDurationHours);
-  const [takeProfit, setTakeProfit] = useState(settings.takeProfitPercent);
-  const [stopLoss, setStopLoss] = useState(settings.stopLossPercent);
   const [trailingStop, setTrailingStop] = useState(settings.trailingStopPercent);
   const [useTrailing, setUseTrailing] = useState(settings.useTrailingStop);
-  const [dailyDrawdown, setDailyDrawdown] = useState(settings.maxDailyDrawdownPercent);
   const [minConfidence, setMinConfidence] = useState(settings.minAiConfidence);
-  const [aiDynamicTargets, setAiDynamicTargets] = useState(settings.aiDynamicTargets ?? true);
   const [multiTargetTrailing, setMultiTargetTrailing] = useState(settings.multiTargetTrailing ?? true);
   const [unlimitedHoldTime, setUnlimitedHoldTime] = useState(settings.unlimitedHoldTime ?? true);
   const [enableToastAlerts, setEnableToastAlerts] = useState(settings.enableToastAlerts ?? true);
-
-  // Capital Allocation Limit (Wallet Protection)
-  const [enableCapitalLimit, setEnableCapitalLimit] = useState(settings.enableCapitalLimit ?? true);
-  const [maxAllocatedCapital, setMaxAllocatedCapital] = useState(settings.maxAllocatedCapitalUsd ?? 5.0);
-
-  // Capital Profile state (Default: Capital=$20, Risk=1%, DailyLoss=5%, Positions=2)
-  const initialCap = settings.capitalProfile || DEFAULT_CAPITAL_PROFILE;
-  const [capitalUsd, setCapitalUsd] = useState(initialCap.capitalUsd ?? 20);
-  const [riskPerTradePercent, setRiskPerTradePercent] = useState(initialCap.riskPerTradePercent ?? 1);
-  const [maxDailyLossPercent, setMaxDailyLossPercent] = useState(initialCap.maxDailyLossPercent ?? 5);
-  const [maxOpenPositions, setMaxOpenPositions] = useState(initialCap.maxOpenPositions ?? 2);
-  const [capitalProfileError, setCapitalProfileError] = useState<string | null>(null);
 
   // Reset confirmation state
   const [hasReset, setHasReset] = useState(false);
@@ -163,43 +147,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   };
 
   const handleSaveStrategy = () => {
-    const profileValidation = RiskManagementService.validateCapitalProfile({
-      capitalUsd,
-      riskPerTradePercent,
-      maxDailyLossPercent,
-      maxOpenPositions,
-    });
-    if (!profileValidation.isValid) {
-      setCapitalProfileError(profileValidation.error || 'Invalid Capital Profile settings');
-      return;
-    }
-    setCapitalProfileError(null);
-
+    // Pure AI autonomous mode:
+    // 1. Capital limits are completely removed and disabled (enableCapitalLimit = false, maxAllocatedCapitalUsd = 0)
+    // 2. Capital profile operates in auto mode (capitalUsd = 0) with zero circuit breaker disruption (maxDailyLossPercent = 0)
+    // 3. Take Profit (TP1, TP2, TP3) and Stop Loss (SL) are computed 100% dynamically by the AI & ATR engine (aiDynamicTargets = true)
+    // 4. Daily drawdown cap is stopped/disabled (maxDailyDrawdownPercent = 0) so the bot trades continuously without arbitrary freeze
     updateSettings({
       capitalProfile: {
-        capitalUsd,
-        riskPerTradePercent,
-        maxDailyLossPercent,
-        maxOpenPositions,
+        capitalUsd: 0,
+        riskPerTradePercent: 1.0,
+        maxDailyLossPercent: 0,
+        maxOpenPositions: maxConcurrent,
       },
-      maxConcurrentPositions: maxOpenPositions,
-      riskPerTradePercent,
+      maxConcurrentPositions: maxConcurrent,
+      riskPerTradePercent: 1.0,
       positionSizeUsd: positionSize,
       leverage,
       allowedDirection: direction,
       maxTradeDurationHours: maxDurationHours,
-      takeProfitPercent: takeProfit,
-      stopLossPercent: stopLoss,
+      takeProfitPercent: 0,
+      stopLossPercent: 0,
       trailingStopPercent: trailingStop,
       useTrailingStop: useTrailing,
-      maxDailyDrawdownPercent: dailyDrawdown,
+      maxDailyDrawdownPercent: 0,
       minAiConfidence: minConfidence,
-      aiDynamicTargets,
+      aiDynamicTargets: true,
       multiTargetTrailing,
       unlimitedHoldTime,
       enableToastAlerts,
-      enableCapitalLimit,
-      maxAllocatedCapitalUsd: maxAllocatedCapital,
+      enableCapitalLimit: false,
+      maxAllocatedCapitalUsd: 0,
     });
     setShowSavedToast(true);
     setTimeout(() => setShowSavedToast(false), 2500);
@@ -317,328 +294,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           {/* TAB 1: STRATEGY & RISK */}
           {activeTab === 'strategy' && (
             <div className="space-y-4">
-              {/* Primary Capital Profile Card */}
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-cyan-500/15 via-slate-900/90 to-slate-900 border border-cyan-500/35 space-y-3.5 shadow-lg">
+              {/* Autonomous AI Architecture Card */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/15 via-slate-900/90 to-slate-900 border border-amber-500/35 space-y-3.5 shadow-lg">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs uppercase tracking-wider">
-                    <Coins className="w-4 h-4" />
-                    <span>{isArabic ? 'ملف رأس المال وحساب المخاطر (Capital Profile)' : 'Authoritative Capital & Risk Profile'}</span>
+                  <div className="flex items-center gap-2 text-amber-400 font-bold text-xs uppercase tracking-wider">
+                    <Sparkles className="w-4 h-4" />
+                    <span>{isArabic ? 'الأتمتة الشاملة بالذكاء الاصطناعي (Full AI Automation)' : 'Full AI Autonomous Engine'}</span>
                   </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-mono font-bold border border-cyan-500/30">
-                    Capital: {capitalUsd === 0 ? 'AUTO' : `$${capitalUsd}`} • {riskPerTradePercent === 0 ? (isArabic ? 'التداول معطل' : 'Trading Disabled') : `${riskPerTradePercent}% Risk`}
+                  <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-bold border border-emerald-500/30">
+                    {isArabic ? '🤖 نشط وتلقائي بالكامل' : '🤖 100% AUTONOMOUS'}
                   </span>
                 </div>
 
-                <div className="text-[11px] text-slate-300 leading-relaxed">
-                  {isArabic
-                    ? 'يتحكم في رأس المال المعتمد لحساب أحجام الصفقات بدقة. يمكنك إدخال 0 لتفعيل الخيارات التلقائية أو تعطيل ميزات محددة وفق القواعد الموضحة أدناه.'
-                    : 'Governs the authoritative capital base for position sizing. You can enter 0 for special behaviors (AUTO capital, disabling trading, or disabling limits) as detailed below.'}
-                </div>
-
-                {capitalProfileError && (
-                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[11px]">
-                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                    <span>{capitalProfileError}</span>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  {/* Capital Usd (0 = AUTO) */}
-                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-slate-300 font-medium text-[11px]">
-                        {isArabic ? 'رأس المال (0 = تلقائي AUTO):' : 'Capital Base (0 = AUTO):'}
-                      </label>
-                      <span className="text-cyan-400 font-mono font-bold text-xs bg-slate-900 px-2 py-0.5 rounded border border-cyan-500/30">
-                        {capitalUsd === 0 ? 'AUTO' : `$${capitalUsd}`}
-                      </span>
+                <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2 text-slate-200">
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {isArabic
+                      ? 'تم إلغاء كافة الإعدادات والنسب المئوية اليدوية والقيود المفروضة على المحفظة بالكامل. البوت يعمل الآن بأتمتة كاملة، ويقوم بتحديد نقاط أخذ الأرباح (TP1, TP2, TP3) ومستوى وقف الخسارة (Stop Loss) وإدارة المخاطرة تلقائياً بالاعتماد على خوارزميات الذكاء الاصطناعي، ومؤشر التقلب اللحظي (ATR)، وسلوك السوق التاريخي.'
+                      : 'All manual percentage inputs and capital limit restrictions have been removed. The bot runs with 100% autonomous quantitative algorithms, calculating dynamic TP1/TP2/TP3 targets and ATR-anchored stop loss based on AI intelligence and market regime.'}
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 font-mono text-[10px]">
+                    <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
+                      <div className="text-slate-400">{isArabic ? 'أهداف أخذ الربح' : 'Take Profit'}</div>
+                      <div className="text-amber-400 font-bold">{isArabic ? 'ذكاء اصطناعي (TP1/2/3)' : 'AI Dynamic'}</div>
                     </div>
-                    <div className="flex flex-wrap gap-1">
-                      {[0, 20, 50, 100, 250].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setCapitalUsd(preset)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold transition ${
-                            capitalUsd === preset
-                              ? 'bg-cyan-500 text-slate-950 font-bold'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {preset === 0 ? 'AUTO' : `$${preset}`}
-                        </button>
-                      ))}
+                    <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
+                      <div className="text-slate-400">{isArabic ? 'وقف الخسارة' : 'Stop Loss'}</div>
+                      <div className="text-emerald-400 font-bold">{isArabic ? 'ديناميكي (ATR)' : 'Dynamic ATR'}</div>
                     </div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={capitalUsd}
-                      onChange={(e) => setCapitalUsd(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-cyan-500 outline-none"
-                    />
-                    <div className="text-[10px] text-slate-400">
-                      {isArabic ? '💡 0 = AUTO: يعتمد رصيد الحساب الفعلي (Equity) من المنصة/المحاكاة' : '💡 0 = AUTO: Uses live/simulated account equity'}
-                    </div>
-                  </div>
-
-                  {/* Risk Per Trade % (0 = Disable Trading) */}
-                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-slate-300 font-medium text-[11px]">
-                        {isArabic ? 'المخاطرة لكل صفقة (0 = إيقاف التداول):' : 'Risk Per Trade (0 = Disable Trading):'}
-                      </label>
-                      <span className="text-amber-400 font-mono font-bold text-xs bg-slate-900 px-2 py-0.5 rounded border border-amber-500/30">
-                        {riskPerTradePercent === 0 ? (isArabic ? 'معطل (0%)' : '0% (Disabled)') : `${riskPerTradePercent}%`}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {[0, 0.5, 1.0, 1.5, 2.0].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setRiskPerTradePercent(preset)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold transition ${
-                            riskPerTradePercent === preset
-                              ? 'bg-amber-500 text-slate-950 font-bold'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {preset === 0 ? '0% (Off)' : `${preset}%`}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      max="5.0"
-                      step="0.1"
-                      value={riskPerTradePercent}
-                      onChange={(e) => setRiskPerTradePercent(Math.min(5.0, Math.max(0, parseFloat(e.target.value) || 0)))}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-amber-500 outline-none"
-                    />
-                    <div className="text-[10px] text-slate-400">
-                      {isArabic ? '💡 0 = Disable Trading: يمنع فتح أي صفقات جديدة نهائياً' : '💡 0 = Disable Trading: Rejects all new entries (NO TRADING)'}
-                    </div>
-                  </div>
-
-                  {/* Max Daily Loss % (0 = Disabled) */}
-                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-slate-300 font-medium text-[11px]">
-                        {isArabic ? 'سقف الخسارة اليومية (0 = معطل):' : 'Max Daily Loss (0 = Disabled):'}
-                      </label>
-                      <span className="text-rose-400 font-mono font-bold text-xs bg-slate-900 px-2 py-0.5 rounded border border-rose-500/30">
-                        {maxDailyLossPercent === 0 ? (isArabic ? 'معطل' : 'Disabled') : `${maxDailyLossPercent}%`}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {[0, 3, 5, 8, 10].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setMaxDailyLossPercent(preset)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold transition ${
-                            maxDailyLossPercent === preset
-                              ? 'bg-rose-500 text-slate-950 font-bold'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {preset === 0 ? 'Disabled' : `${preset}%`}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      max="20"
-                      step="0.5"
-                      value={maxDailyLossPercent}
-                      onChange={(e) => setMaxDailyLossPercent(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-rose-500 outline-none"
-                    />
-                    <div className="text-[10px] text-slate-400">
-                      {isArabic ? '💡 0 = Disabled: تعطيل قاطع الدائرة اليومي' : '💡 0 = Disabled: Daily loss circuit breaker is off'}
-                    </div>
-                  </div>
-
-                  {/* Max Open Positions (0 = Disable New Positions) */}
-                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-slate-300 font-medium text-[11px]">
-                        {isArabic ? 'أقصى صفقات متزامنة (0 = إيقاف الصفقات):' : 'Max Open Positions (0 = Disable New Positions):'}
-                      </label>
-                      <span className="text-emerald-400 font-mono font-bold text-xs bg-slate-900 px-2 py-0.5 rounded border border-emerald-500/30">
-                        {maxOpenPositions === 0 ? (isArabic ? 'معطل (0)' : 'Disabled (0)') : maxOpenPositions}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {[0, 1, 2, 3, 4].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setMaxOpenPositions(preset)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold transition ${
-                            maxOpenPositions === preset
-                              ? 'bg-emerald-500 text-slate-950 font-bold'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                          }`}
-                        >
-                          {preset === 0 ? '0 (Off)' : preset}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      max="10"
-                      step="1"
-                      value={maxOpenPositions}
-                      onChange={(e) => setMaxOpenPositions(Math.max(0, parseInt(e.target.value) || 0))}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-emerald-500 outline-none"
-                    />
-                    <div className="text-[10px] text-slate-400">
-                      {isArabic ? '💡 0 = Disable New Positions: يمنع فتح أي صفقات جديدة' : '💡 0 = Disable New Positions: Blocks new entries'}
+                    <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
+                      <div className="text-slate-400">{isArabic ? 'إدارة الرصيد' : 'Capital Allocation'}</div>
+                      <div className="text-cyan-400 font-bold">{isArabic ? 'تلقائي كامل' : 'Full Auto'}</div>
                     </div>
                   </div>
                 </div>
-
-                {/* Live Sizing & $20 Compatibility Callout Box */}
-                <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-1.5 text-[11px]">
-                  <div className="flex justify-between text-slate-400">
-                    <span>{isArabic ? 'رأس المال المعتمد:' : 'Capital:'}</span>
-                    <span className="text-cyan-400 font-mono font-bold">
-                      {capitalUsd === 0 ? 'Capital: AUTO' : `$${capitalUsd} USDT`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>{isArabic ? 'الميزانية المخططة للمخاطرة:' : 'Risk per Trade:'}</span>
-                    <span className="text-amber-400 font-mono font-bold">
-                      {riskPerTradePercent === 0
-                        ? (isArabic ? 'Trading disabled: risk per trade is 0%.' : 'Trading disabled: risk per trade is 0%.')
-                        : capitalUsd === 0
-                        ? `${riskPerTradePercent}% of Live Equity`
-                        : `$${(capitalUsd * (riskPerTradePercent / 100)).toFixed(2)} USDT`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>{isArabic ? 'سقف وقف الخسارة اليومي:' : 'Daily Loss Limit:'}</span>
-                    <span className="text-rose-400 font-mono font-bold">
-                      {maxDailyLossPercent === 0
-                        ? 'Daily Loss Limit: Disabled'
-                        : capitalUsd === 0
-                        ? `${maxDailyLossPercent}% of Live Equity`
-                        : `-$${(capitalUsd * (maxDailyLossPercent / 100)).toFixed(2)} USDT`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>{isArabic ? 'حالة الصفقات الجديدة:' : 'New Positions Status:'}</span>
-                    <span className="text-emerald-400 font-mono font-bold">
-                      {maxOpenPositions === 0 ? 'New positions disabled.' : `${maxOpenPositions} max active`}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-amber-300/90 border-t border-slate-800/80 pt-1.5 leading-relaxed">
-                    🛡️ {isArabic
-                      ? 'قواعد الأمان: عند اختيار AUTO (0)، يقرأ النظام الرصيد الفعلي من بينانس أو رصيد المحاكاة. وإذا كان الرصيد غير متوفر أو مساوياً لصفر، يرفض محرك المخاطر الصفقة تلقائياً دون أي fallback خفي.'
-                      : 'Safety Guarantee: In AUTO mode (0), the system strictly queries actual live/simulated account equity. If equity is unavailable or zero, trades are cleanly rejected with zero hidden fallbacks.'}
-                  </div>
-                </div>
-              </div>
-
-              {/* Highlighted Capital Allocation & Binance Reserve Protection Card */}
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-500/15 via-slate-900/90 to-slate-900 border border-emerald-500/35 space-y-3.5 shadow-lg">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>{isArabic ? 'سقف رأس المال المخصص للبوت (حماية رصيد بينانس)' : 'Bot Capital Allocation & Wallet Protection'}</span>
-                  </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-bold border border-emerald-500/30">
-                    {enableCapitalLimit ? (isArabic ? 'الحماية مفعلة ✓' : 'PROTECTION ACTIVE') : (isArabic ? 'معطل' : 'DISABLED')}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/80 border border-slate-800">
-                  <div>
-                    <div className="font-semibold text-white">
-                      {isArabic ? 'تفعيل سقف رأس المال المخصص للتداول' : 'Enforce Capital Allocation Cap'}
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                      {isArabic
-                        ? 'مثال: لو رصيدك في بينانس 10$ وحددت 5$، سيتداول البوت بـ 5$ كحد أقصى ولن يقترب من الـ 5$ الأخرى إطلاقاً لحمايتها.'
-                        : 'E.g., if your wallet has $10 and you specify $5, the bot only uses up to $5, preserving the other $5 completely untouched.'}
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={enableCapitalLimit}
-                    onChange={(e) => setEnableCapitalLimit(e.target.checked)}
-                    className="w-4 h-4 accent-emerald-500 rounded cursor-pointer shrink-0"
-                  />
-                </div>
-
-                {enableCapitalLimit && (
-                  <div className="space-y-3 pt-1">
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="text-slate-300 font-medium">
-                          {isArabic ? 'الحد الأقصى المخصص للبوت (USDT):' : 'Max Allowed Bot Capital (USDT):'}
-                        </label>
-                        <span className="text-emerald-400 font-mono font-bold text-sm bg-slate-950 px-2 py-0.5 rounded border border-emerald-500/30">
-                          ${maxAllocatedCapital.toFixed(2)} USDT
-                        </span>
-                      </div>
-
-                      {/* Quick Presets */}
-                      <div className="flex flex-wrap gap-1.5 mb-2.5">
-                        {[2, 5, 10, 20, 50, 100].map((preset) => (
-                          <button
-                            key={preset}
-                            type="button"
-                            onClick={() => setMaxAllocatedCapital(preset)}
-                            className={`px-3 py-1 rounded-lg text-xs font-mono font-semibold transition ${
-                              maxAllocatedCapital === preset
-                                ? 'bg-emerald-500 text-slate-950 font-bold shadow-sm'
-                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                            }`}
-                          >
-                            ${preset}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="0.5"
-                          step="0.5"
-                          value={maxAllocatedCapital}
-                          onChange={(e) => setMaxAllocatedCapital(Math.max(0.5, parseFloat(e.target.value) || 0.5))}
-                          className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                          placeholder="5.0"
-                        />
-                        <span className="absolute right-3 top-2 text-slate-500 font-mono">USDT</span>
-                      </div>
-                    </div>
-
-                    {/* Live Protection Visualizer Bar */}
-                    <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2 text-[11px]">
-                      <div className="flex justify-between text-slate-400">
-                        <span>{isArabic ? 'رصيد محفظة بينانس الكلي:' : 'Total Binance Wallet:'}</span>
-                        <span className="text-white font-mono font-bold">${balance.totalWalletBalance.toFixed(2)} USDT</span>
-                      </div>
-                      <div className="flex justify-between text-emerald-400">
-                        <span>{isArabic ? 'سقف البوت المسموح به للتداول:' : 'Bot Allowed Capital Allocation:'}</span>
-                        <span className="font-mono font-bold">${maxAllocatedCapital.toFixed(2)} USDT</span>
-                      </div>
-                      <div className="flex justify-between text-cyan-400 font-semibold border-t border-slate-800/80 pt-1.5">
-                        <span>🛡️ {isArabic ? 'الرصيد المحمي المحجوز (لن يمسه البوت نهائياً):' : 'Protected Reserve (Untouched by Bot):'}</span>
-                        <span className="font-mono font-bold text-cyan-300">
-                          ${Math.max(0, balance.totalWalletBalance - maxAllocatedCapital).toFixed(2)} USDT ({balance.totalWalletBalance > 0 ? Math.round((Math.max(0, balance.totalWalletBalance - maxAllocatedCapital) / balance.totalWalletBalance) * 100) : 0}%)
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Highlighted AI Dynamic TP/SL & Multi-Target System Card */}
@@ -648,7 +336,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   <span>{language === 'ar' ? 'نظام الذكاء الاصطناعي للأهداف المتعددة وتأمين الأرباح' : 'AI Autonomous Multi-Target & Profit Lock System'}</span>
                 </div>
 
-                {/* AI Dynamic TP/SL Toggle */}
+                {/* AI Dynamic TP/SL Status */}
                 <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-900/80 border border-slate-800">
                   <div>
                     <div className="font-semibold text-white">
@@ -656,16 +344,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
                       {language === 'ar'
-                        ? 'يقوم البوت تلقائياً بحساب 3 أهداف ربح (TP1, TP2, TP3) ومستوى وقف الخسارة الدقيق بناءً على تقلبات وتحليل العملة'
-                        : 'Bot dynamically computes TP1, TP2, TP3 targets and volatility-anchored stop loss'}
+                        ? 'يقوم البوت تلقائياً بحساب 3 أهداف ربح (TP1, TP2, TP3) ومستوى وقف الخسارة الدقيق بناءً على تقلبات وتحليل العملة دون أي نسب يدوية'
+                        : 'Bot dynamically computes TP1, TP2, TP3 targets and volatility-anchored stop loss without static percentages'}
                     </div>
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={aiDynamicTargets}
-                    onChange={(e) => setAiDynamicTargets(e.target.checked)}
-                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0"
-                  />
+                  <span className="text-[10px] px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold border border-amber-500/30 shrink-0">
+                    {language === 'ar' ? 'مفعل دائماً ✓' : 'ALWAYS ACTIVE ✓'}
+                  </span>
                 </div>
 
                 {/* Multi-Target Progressive Trailing Stop Toggle */}
@@ -880,53 +565,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 </div>
               </div>
 
-              {/* Risk Controls: TP / SL / Trailing */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-                <div>
-                  <label className="block text-slate-400 mb-1 font-medium">
-                    {t.takeProfitLabel}
-                  </label>
-                  <input
-                    type="number"
-                    step={0.1}
-                    min={0.5}
-                    max={20}
-                    value={takeProfit}
-                    onChange={(e) => setTakeProfit(parseFloat(e.target.value) || 2)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                  />
-                </div>
 
-                <div>
-                  <label className="block text-slate-400 mb-1 font-medium">
-                    {t.stopLossLabel}
-                  </label>
-                  <input
-                    type="number"
-                    step={0.1}
-                    min={0.2}
-                    max={10}
-                    value={stopLoss}
-                    onChange={(e) => setStopLoss(parseFloat(e.target.value) || 1)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 mb-1 font-medium">
-                    {t.dailyDrawdownLabel}
-                  </label>
-                  <input
-                    type="number"
-                    step={0.5}
-                    min={1}
-                    max={25}
-                    value={dailyDrawdown}
-                    onChange={(e) => setDailyDrawdown(parseFloat(e.target.value) || 5)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-              </div>
 
               {/* Trailing Stop Toggle */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800">

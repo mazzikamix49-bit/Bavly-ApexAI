@@ -5,8 +5,11 @@ import {
   CheckCircle2,
   Clock,
   Layers,
+  Loader2,
+  Play,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   TrendingDown,
   TrendingUp,
   X,
@@ -14,11 +17,40 @@ import {
 } from 'lucide-react';
 
 export const ActivePositionsTable: React.FC = () => {
-  const { positions, closePosition, closeAllPositions, t, language, runReconciliation } = useTrading();
+  const {
+    positions,
+    closePosition,
+    closeAllPositions,
+    t,
+    language,
+    runReconciliation,
+    tradingMode,
+    botRunning,
+    toggleBot,
+    openPosition,
+    marketPairs,
+  } = useTrading();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [isClosingAll, setIsClosingAll] = useState(false);
   const [isReconciling, setIsReconciling] = useState(false);
+  const [isExecutingQuickTest, setIsExecutingQuickTest] = useState(false);
   const isArabic = language === 'ar';
+
+  const handleQuickTestTrade = async () => {
+    if (marketPairs.length === 0) return;
+    setIsExecutingQuickTest(true);
+    // Prefer top candidate or BTCUSDT
+    const candidate = marketPairs.find((p) => p.symbol === 'BTCUSDT') || marketPairs[0];
+    const side = candidate.trend === 'BEARISH' ? 'SHORT' : 'LONG';
+    await openPosition(
+      candidate.symbol,
+      side,
+      isArabic
+        ? '⚡ صفقة اختبار تجريبية فورية للتحقق من عمل النظام والمحاكاة'
+        : '⚡ Instant paper test trade for system verification'
+    );
+    setIsExecutingQuickTest(false);
+  };
 
   const handleClose = async (posId: string) => {
     setClosingId(posId);
@@ -95,18 +127,64 @@ export const ActivePositionsTable: React.FC = () => {
 
       {/* Content */}
       {positions.length === 0 ? (
-        <div className="p-10 sm:p-14 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-slate-800/50 border border-slate-700/50 mx-auto flex items-center justify-center text-slate-500 mb-3">
+        <div className="p-8 sm:p-12 text-center space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-slate-800/50 border border-slate-700/50 mx-auto flex items-center justify-center text-slate-500">
             <Zap className="w-7 h-7 text-amber-400/60 animate-pulse" />
           </div>
-          <p className="text-sm font-medium text-slate-300 max-w-md mx-auto">
-            {t.noActivePositions}
-          </p>
-          <p className="text-xs text-slate-500 mt-1">
-            {isArabic
-              ? 'محرك المخاطر والماسح الآلي يراقبان السوق لدخول الصفقات المطابقة فقط'
-              : 'Quantitative Risk Engine & Scanner monitoring for strictly qualified setups'}
-          </p>
+
+          <div className="space-y-1">
+            <p className="text-sm font-bold text-slate-200">
+              {t.noActivePositions}
+            </p>
+            <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+              {tradingMode === 'paper'
+                ? isArabic
+                  ? botRunning
+                    ? '🟢 البوت يعمل حالياً في الوضع التجريبي ويفحص السوق آلياً لدخول أفضل الصفقات. يمكنك أيضاً الضغط أدناه لتنفيذ صفقة تجريبية فوراً.'
+                    : '🟡 الوضع التجريبي نشط ولكن البوت متوقف حالياً. يمكنك بدء التشغيل التلقائي أو تنفيذ صفقة تجريبية فورية لمعاينة الأداء.'
+                  : botRunning
+                  ? '🟢 Paper bot is scanning live markets for high-probability setups. You can also trigger an instant test position below.'
+                  : '🟡 Paper Trading mode active. Bot is paused. Start the bot or trigger an instant test position.'
+                : isArabic
+                ? 'محرك المخاطر والماسح الآلي يراقبان السوق لدخول الصفقات المطابقة فقط لحماية رأس المال.'
+                : 'Quantitative Risk Engine & Scanner monitoring for strictly qualified setups.'}
+            </p>
+          </div>
+
+          {/* Action Buttons in Empty State */}
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+            {tradingMode === 'paper' && !botRunning && (
+              <button
+                type="button"
+                onClick={toggleBot}
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-black" />
+                <span>{isArabic ? '▶️ تشغيل البوت في الوضع التجريبي' : 'Start Paper Bot'}</span>
+              </button>
+            )}
+
+            {tradingMode === 'paper' && (
+              <button
+                type="button"
+                onClick={handleQuickTestTrade}
+                disabled={isExecutingQuickTest || marketPairs.length === 0}
+                className="px-4 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold text-xs flex items-center gap-2 shadow-md transition disabled:opacity-50 cursor-pointer"
+              >
+                {isExecutingQuickTest ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                    <span>{isArabic ? 'جارٍ تنفيذ الصفقة...' : 'Executing...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span>{isArabic ? '⚡ فتح صفقة تجريبية فورية الآن' : 'Open Instant Test Trade'}</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="overflow-x-auto">

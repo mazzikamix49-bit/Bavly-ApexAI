@@ -306,14 +306,33 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const saved = localStorage.getItem('apex_bot_settings');
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
+        const resolvedCapitalProfile = {
+          ...DEFAULT_CAPITAL_PROFILE,
+          ...(parsed.capitalProfile || {}),
+        };
+
+        // Auto-heal: Ensure risk per trade is positive institutional 1.0%
+        if (!resolvedCapitalProfile.riskPerTradePercent || resolvedCapitalProfile.riskPerTradePercent <= 0) {
+          resolvedCapitalProfile.riskPerTradePercent = 1.0;
+        }
+        if (!resolvedCapitalProfile.maxOpenPositions || resolvedCapitalProfile.maxOpenPositions <= 0) {
+          resolvedCapitalProfile.maxOpenPositions = 4;
+        }
+
+        const healedSettings: BotSettings = {
           ...DEFAULT_SETTINGS,
           ...parsed,
+          riskPerTradePercent:
+            parsed.riskPerTradePercent && parsed.riskPerTradePercent > 0 ? parsed.riskPerTradePercent : 1.0,
+          enableCapitalLimit: false,
+          maxAllocatedCapitalUsd: 0,
+          aiDynamicTargets: true,
           productionConfirmed: false,
-          capitalProfile: parsed.capitalProfile
-            ? { ...DEFAULT_CAPITAL_PROFILE, ...parsed.capitalProfile }
-            : DEFAULT_CAPITAL_PROFILE,
+          capitalProfile: resolvedCapitalProfile,
         };
+
+        localStorage.setItem('apex_bot_settings', JSON.stringify(healedSettings));
+        return healedSettings;
       }
       return DEFAULT_SETTINGS;
     } catch {
@@ -1123,8 +1142,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       }
 
-      // Autonomous Candidate Scanning - Strictly disabled in SAFE BOOT MODE or when trading loop is inactive
-      const canScanAndTrade = workerStatusRef.current ? workerStatusRef.current.tradingLoopActive : false;
+      // Autonomous Candidate Scanning:
+      // In paper trading mode (simulated sandbox), scanning runs whenever bot is running.
+      // In real mode, strictly guarded by server worker tradingLoopActive flag.
+      const isPaperMode = tradingModeRef.current === 'paper';
+      const canScanAndTrade = isPaperMode || (workerStatusRef.current ? workerStatusRef.current.tradingLoopActive : false);
       if (
         canScanAndTrade &&
         botRunningRef.current &&

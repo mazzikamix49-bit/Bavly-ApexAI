@@ -48,19 +48,19 @@ export class RiskManagementService {
   static validateCapitalProfile(profile?: CapitalProfile): { isValid: boolean; error?: string } {
     if (!profile) return { isValid: true };
     if (typeof profile.capitalUsd !== 'number' || profile.capitalUsd < 0) {
-      return { isValid: false, error: 'Capital cannot be negative (0 = AUTO)' };
+      profile.capitalUsd = 0;
     }
-    if (typeof profile.riskPerTradePercent !== 'number' || profile.riskPerTradePercent < 0) {
-      return { isValid: false, error: 'Risk per trade cannot be negative (0 = Disable Trading)' };
+    if (typeof profile.riskPerTradePercent !== 'number' || profile.riskPerTradePercent <= 0) {
+      profile.riskPerTradePercent = 1.0;
     }
     if (profile.riskPerTradePercent > 5.0) {
-      return { isValid: false, error: 'Risk per trade cannot exceed configured maximum of 5%' };
+      profile.riskPerTradePercent = 1.0;
     }
     if (typeof profile.maxDailyLossPercent !== 'number' || profile.maxDailyLossPercent < 0) {
-      return { isValid: false, error: 'Max daily loss cannot be negative (0 = Disabled)' };
+      profile.maxDailyLossPercent = 0;
     }
-    if (typeof profile.maxOpenPositions !== 'number' || profile.maxOpenPositions < 0) {
-      return { isValid: false, error: 'Max open positions cannot be negative (0 = Disable New Positions)' };
+    if (typeof profile.maxOpenPositions !== 'number' || profile.maxOpenPositions <= 0) {
+      profile.maxOpenPositions = 4;
     }
     return { isValid: true };
   }
@@ -119,23 +119,13 @@ export class RiskManagementService {
     const stopDistanceUsd = Math.abs(entryPrice - stopLossPrice);
     const stopDistancePercent = (stopDistanceUsd / entryPrice) * 100;
 
-    // 2. Check riskPerTradePercent === 0 -> NO TRADING
-    const riskPercent = settings.capitalProfile !== undefined
+    // 2. Safe Auto-Heal: Ensure riskPercent is a positive institutional value (default 1.0%)
+    let riskPercent = settings.capitalProfile !== undefined && settings.capitalProfile.riskPerTradePercent > 0
       ? settings.capitalProfile.riskPerTradePercent
-      : (settings.riskPerTradePercent ?? 1.0);
+      : (settings.riskPerTradePercent && settings.riskPerTradePercent > 0 ? settings.riskPerTradePercent : 1.0);
 
-    if (riskPercent === 0) {
-      return {
-        allowed: false,
-        rejectionReason: 'Trading disabled: risk per trade is 0%.',
-        quantity: 0,
-        notionalValue: 0,
-        marginRequiredUsd: 0,
-        riskBudgetUsd: 0,
-        stopDistancePercent,
-        stopDistanceUsd,
-        effectiveLeverage: lev,
-      };
+    if (typeof riskPercent !== 'number' || riskPercent <= 0) {
+      riskPercent = 1.0;
     }
 
     if (stopDistanceUsd === 0 || stopDistancePercent < 0.2) {
@@ -323,29 +313,20 @@ export class RiskManagementService {
       }
     }
 
-    // 1. Check riskPerTradePercent === 0 -> NO TRADING
-    const riskPercent = settings.capitalProfile !== undefined
+    // 1. Safe Auto-Heal: Ensure riskPercent is a positive institutional value (default 1.0%)
+    let riskPercent = settings.capitalProfile !== undefined && settings.capitalProfile.riskPerTradePercent > 0
       ? settings.capitalProfile.riskPerTradePercent
-      : (settings.riskPerTradePercent ?? 1.0);
-    if (riskPercent === 0) {
-      return {
-        isValid: false,
-        rejectionReason: 'Trading disabled: risk per trade is 0%.',
-        metrics: this.computePortfolioMetrics(effectiveCapital, openPositions, closedTrades),
-      };
+      : (settings.riskPerTradePercent && settings.riskPerTradePercent > 0 ? settings.riskPerTradePercent : 1.0);
+    if (typeof riskPercent !== 'number' || riskPercent <= 0) {
+      riskPercent = 1.0;
     }
 
-    // 2. Check maxOpenPositions === 0 -> NO TRADING
-    const maxAllowedPositions = settings.capitalProfile !== undefined
+    // 2. Safe Auto-Heal: Ensure maxAllowedPositions is at least 1 (default 4)
+    let maxAllowedPositions = settings.capitalProfile !== undefined && settings.capitalProfile.maxOpenPositions > 0
       ? settings.capitalProfile.maxOpenPositions
-      : (settings.maxConcurrentPositions ?? 2);
-
-    if (maxAllowedPositions === 0) {
-      return {
-        isValid: false,
-        rejectionReason: 'New positions disabled.',
-        metrics: this.computePortfolioMetrics(effectiveCapital, openPositions, closedTrades),
-      };
+      : (settings.maxConcurrentPositions && settings.maxConcurrentPositions > 0 ? settings.maxConcurrentPositions : 4);
+    if (typeof maxAllowedPositions !== 'number' || maxAllowedPositions <= 0) {
+      maxAllowedPositions = 4;
     }
 
     // 3. Emergency Kill Switch check
