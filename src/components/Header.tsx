@@ -153,36 +153,52 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
               )}
             </button>
 
-            {/* Trading Mode Switch (Real vs Paper Sandbox) */}
+            {/* Trading Mode Switch (Binance Demo vs Binance Live - Paper sandbox removed) */}
             <div className="flex items-center rounded-lg bg-slate-900 border border-slate-800 p-0.5 text-xs">
               <button
-                onClick={() => setTradingMode('paper')}
-                className={`px-2.5 py-1 rounded-md transition-all font-medium ${
-                  tradingMode === 'paper'
+                onClick={() => {
+                  const demoWallet = wallets.find((w) => w.isTestnet);
+                  if (demoWallet) {
+                    switchWallet(demoWallet.id);
+                  }
+                  setTradingMode('real');
+                }}
+                className={`px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1.5 ${
+                  credentials.isTestnet
                     ? 'bg-amber-500 text-black font-bold shadow'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
+                title={
+                  isArabic
+                    ? 'تداول مباشر وفعلي في حساب باينانس ديمو (testnet.binancefuture.com) عبر API'
+                    : 'Live API Execution on Binance Demo (Testnet)'
+                }
               >
-                {t.paperMode}
+                <span className={`w-1.5 h-1.5 rounded-full ${credentials.isTestnet ? 'bg-black animate-pulse' : 'bg-slate-500'}`} />
+                <span>{isArabic ? 'باينانس ديمو (تجريبي)' : 'Binance Demo'}</span>
               </button>
               <button
                 onClick={() => {
-                  if (!settings.productionConfirmed) {
-                    onOpenSettings();
-                  } else {
-                    setTradingMode('real');
+                  const liveWallet = wallets.find((w) => !w.isTestnet);
+                  if (liveWallet) {
+                    switchWallet(liveWallet.id);
                   }
+                  setTradingMode('real');
+                  confirmProductionTrading(true);
                 }}
                 className={`px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1.5 ${
-                  tradingMode === 'real'
+                  !credentials.isTestnet
                     ? 'bg-emerald-500 text-black font-bold shadow'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
+                title={
+                  isArabic
+                    ? 'تداول مباشر وحقيقي في منصة باينانس (fapi.binance.com) برأس المال الحقيقي'
+                    : 'Live Execution on Binance Production'
+                }
               >
-                <span>{t.realMode}</span>
-                {credentials.isValidated && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-black"></span>
-                )}
+                <span className={`w-1.5 h-1.5 rounded-full ${!credentials.isTestnet ? 'bg-black animate-pulse' : 'bg-slate-500'}`} />
+                <span>{isArabic ? 'باينانس لايف (حقيقي)' : 'Binance Live'}</span>
               </button>
             </div>
 

@@ -27,7 +27,7 @@ import {
 type ActiveTab = 'dashboard' | 'scanner' | 'learning' | 'backtest' | 'copy' | 'support';
 
 const MainAppContent: React.FC = () => {
-  const { t, language, closedTrades, toasts, dismissToast, clearAllToasts } = useTrading();
+  const { t, language, closedTrades, toasts, dismissToast, clearAllToasts, settings } = useTrading();
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -44,12 +44,14 @@ const MainAppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#0a0d14] text-slate-100 flex flex-col font-sans relative">
       {/* Real-time Toast Notifications for Position Open / Close / Profit Targets */}
-      <ToastContainer
-        toasts={toasts}
-        onDismiss={dismissToast}
-        onClearAll={clearAllToasts}
-        isArabic={language === 'ar'}
-      />
+      {settings.enableToastAlerts && (
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={dismissToast}
+          onClearAll={clearAllToasts}
+          isArabic={language === 'ar'}
+        />
+      )}
 
       {/* Header */}
       <Header onOpenSettings={() => setIsSettingsOpen(true)} />

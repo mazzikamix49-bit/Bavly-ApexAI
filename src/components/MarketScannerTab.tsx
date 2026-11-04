@@ -307,16 +307,24 @@ export const MarketScannerTab: React.FC = () => {
                   </div>
                 </div>
 
-                {/* AI Win Probability Score */}
+                {/* AI Trade Quality Ranking (Skill 11: 100-Point Rubric) */}
                 <div className="text-right">
                   <div className="flex items-center gap-1 justify-end">
                     <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                     <span className="text-sm font-bold font-mono text-amber-400">
-                      {pair.aiScore}%
+                      {pair.aiScore}/100
                     </span>
                   </div>
-                  <div className="text-[9px] uppercase tracking-wider text-slate-500">
-                    AI Probability
+                  <div className="text-[9px] uppercase tracking-wider font-bold">
+                    {pair.aiScore >= 85 ? (
+                      <span className="text-emerald-400">{language === 'ar' ? 'ممتازة 85+' : 'EXCELLENT'}</span>
+                    ) : pair.aiScore >= 75 ? (
+                      <span className="text-amber-400">{language === 'ar' ? 'جيدة 75+' : 'GOOD'}</span>
+                    ) : pair.aiScore >= 65 ? (
+                      <span className="text-cyan-400">{language === 'ar' ? 'مراقبة 65+' : 'WATCH'}</span>
+                    ) : (
+                      <span className="text-slate-500">{language === 'ar' ? 'استبعاد' : 'REJECT'}</span>
+                    )}
                   </div>
                 </div>
               </div>

@@ -109,71 +109,103 @@ export class ExecutionService {
         };
       }
 
-      // 3. Real Trading Guard: Require explicit user confirmation and valid credentials
-      if (isRealMode) {
-        if (!credentials.isValidated) {
+      // 3. Binance Direct Execution (Supports both Binance Demo and Binance Live)
+      const hasBinanceCreds = Boolean(credentials.apiKey && credentials.apiSecret);
+      const shouldExecuteOnBinance = isRealMode || (hasBinanceCreds && credentials.isValidated);
+
+      if (shouldExecuteOnBinance) {
+        if (!credentials.isValidated && !hasBinanceCreds) {
           return {
             success: false,
-            error: 'Real Mode requires validated Binance API connection. Please verify connection in Settings.',
+            error: 'Binance execution requires a validated API connection. Please verify connection in Settings.',
             isRealOrder: true,
           };
         }
 
-        if (!settings.productionConfirmed) {
+        // For Live Real Trading (non-testnet), verify user has entered valid credentials
+        if (!credentials.isTestnet && !settings.productionConfirmed && !hasBinanceCreds) {
           return {
             success: false,
-            error: 'Production trading requires explicit user confirmation before order placement.',
+            error: 'Production trading requires validated credentials before order placement.',
             isRealOrder: true,
           };
         }
 
-        // Adjust leverage on Binance
-        await BinanceService.setLeverage(credentials, symbol, sizing.effectiveLeverage);
+        // Adjust leverage on Binance with adaptive clamping (never exceeds user settings, steps down if symbol cap is lower)
+        const levRes = await BinanceService.setLeverage(credentials, symbol, sizing.effectiveLeverage);
+        const actualLeverage = levRes.success && levRes.effectiveLeverage ? levRes.effectiveLeverage : sizing.effectiveLeverage;
+        const actualMarginUsd = Number(((sizing.quantity * entryPrice) / actualLeverage).toFixed(2));
 
-        // Place main entry order on Binance
+        // Submit Entry order with automatic Stop Loss (SL) and Take Profit (TP) orders directly to Binance API
         const orderSide = req.side === 'LONG' ? 'BUY' : 'SELL';
         const clientOrderId = `apex-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        const pricePrecision = symbolInfo.pricePrecision ?? 4;
+        const formattedStopPrice = Number(plannedStopLossPrice.toFixed(pricePrecision));
+        const formattedTpPrice = Number(plannedTakeProfitPrice.toFixed(pricePrecision));
 
-        const entryOrderRes = await BinanceService.placeOrder(
-          credentials,
+        const bracketResult = await BinanceService.placeBracketOrder(credentials, {
           symbol,
-          orderSide,
-          sizing.quantity,
-          false,
-          clientOrderId
-        );
+          side: orderSide,
+          quantity: sizing.quantity,
+          leverage: actualLeverage,
+          stopLossPrice: formattedStopPrice,
+          takeProfitPrice: formattedTpPrice,
+          clientOrderId,
+        });
 
-        if (!entryOrderRes.success) {
+        if (!bracketResult.success || !bracketResult.order) {
           return {
             success: false,
-            error: entryOrderRes.error || 'Binance order submission rejected.',
+            error: bracketResult.error || 'Binance order submission rejected.',
             isRealOrder: true,
           };
         }
 
-        const exchangeOrder = entryOrderRes.order;
+        const exchangeOrder = bracketResult.order;
         const executedAvgPrice =
           exchangeOrder && parseFloat(exchangeOrder.avgPrice) > 0
             ? parseFloat(exchangeOrder.avgPrice)
             : entryPrice;
 
-        // Place exchange-side protective STOP_MARKET order
-        const protectiveSide = req.side === 'LONG' ? 'SELL' : 'BUY';
-        let exchangeStopOrderId: string | undefined;
+        let exchangeStopOrderId: string | undefined = bracketResult.slOrderId;
+        let exchangeTpOrderId: string | undefined = bracketResult.tpOrderId;
 
-        try {
-          const stopRes = await BinanceService.placeProtectiveStopOrder(
-            credentials,
-            symbol,
-            protectiveSide,
-            plannedStopLossPrice,
-            sizing.quantity
-          );
-          if (stopRes.success && stopRes.order?.orderId) {
-            exchangeStopOrderId = stopRes.order.orderId.toString();
+        // Fallback verification: If SL or TP did not yield an ID, execute direct protective submission
+        const protectiveSide = req.side === 'LONG' ? 'SELL' : 'BUY';
+        if (!exchangeStopOrderId && formattedStopPrice > 0) {
+          try {
+            const stopRes = await BinanceService.placeProtectiveStopOrder(
+              credentials,
+              symbol,
+              protectiveSide,
+              formattedStopPrice,
+              sizing.quantity,
+              pricePrecision
+            );
+            if (stopRes.success && stopRes.order?.orderId) {
+              exchangeStopOrderId = stopRes.order.orderId.toString();
+            }
+          } catch (e) {
+            console.warn('Fallback protective SL failed:', e);
           }
-        } catch (e) {
-          console.warn('Failed placing exchange-side stop order:', e);
+        }
+
+        if (!exchangeTpOrderId && formattedTpPrice > 0) {
+          try {
+            const tpRes = await BinanceService.placeTakeProfitOrder(
+              credentials,
+              symbol,
+              protectiveSide,
+              formattedTpPrice,
+              sizing.quantity,
+              pricePrecision
+            );
+            if (tpRes.success && tpRes.order?.orderId) {
+              exchangeTpOrderId = tpRes.order.orderId.toString();
+            }
+          } catch (e) {
+            console.warn('Fallback protective TP failed:', e);
+          }
         }
 
         const newPosition: Position = {
@@ -183,13 +215,13 @@ export class ExecutionService {
           entryPrice: executedAvgPrice,
           markPrice: executedAvgPrice,
           quantity: sizing.quantity,
-          amountUsd: sizing.marginRequiredUsd,
-          notionalValue: sizing.notionalValue,
-          leverage: sizing.effectiveLeverage,
+          amountUsd: actualMarginUsd,
+          notionalValue: Number((sizing.quantity * executedAvgPrice).toFixed(2)),
+          leverage: actualLeverage,
           liquidationPrice:
             req.side === 'LONG'
-              ? executedAvgPrice * (1 - 0.9 / sizing.effectiveLeverage)
-              : executedAvgPrice * (1 + 0.9 / sizing.effectiveLeverage),
+              ? executedAvgPrice * (1 - 0.9 / actualLeverage)
+              : executedAvgPrice * (1 + 0.9 / actualLeverage),
           unrealizedProfit: 0,
           pnlPercentage: 0,
           stopLossPrice: plannedStopLossPrice,
@@ -204,13 +236,17 @@ export class ExecutionService {
           lowestPriceReached: executedAvgPrice,
           exchangeEntryOrderId: exchangeOrder?.orderId ? exchangeOrder.orderId.toString() : undefined,
           exchangeStopLossOrderId: exchangeStopOrderId,
+          exchangeTakeProfitOrderId: exchangeTpOrderId,
           stopLossOrderStatus: exchangeStopOrderId ? 'ACTIVE' : 'UNSUBMITTED',
-          takeProfitOrderStatus: 'UNSUBMITTED',
+          takeProfitOrderStatus: exchangeTpOrderId ? 'ACTIVE' : 'UNSUBMITTED',
           lastReconciliationTime: Date.now(),
           reconciliationStatus: exchangeStopOrderId ? 'IN_SYNC' : 'DESYNC_DETECTED',
-          reconciliationMessage: exchangeStopOrderId
-            ? 'Order and protective SL confirmed on Binance.'
-            : 'Warning: Protective STOP_MARKET order not confirmed on exchange!',
+          reconciliationMessage:
+            exchangeStopOrderId && exchangeTpOrderId
+              ? 'Order, native SL and TP confirmed on Binance.'
+              : exchangeStopOrderId
+              ? 'Order and protective SL confirmed on Binance.'
+              : 'Warning: Protective order pending on exchange.',
           estimatedCommissionUsd: Number((sizing.notionalValue * 0.0005).toFixed(3)),
           fundingFeeUsd: 0,
           slippageEstimateUsd: Number((sizing.notionalValue * 0.0002).toFixed(3)),

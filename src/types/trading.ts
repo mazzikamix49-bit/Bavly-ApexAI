@@ -1,6 +1,7 @@
 export type TradeDirection = 'LONG' | 'SHORT';
 export type AllowedDirection = 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY';
 export type TradingMode = 'real' | 'testnet' | 'paper';
+export type PositionSizingMode = 'RISK_PORTFOLIO_DYNAMIC' | 'STRICT_FIXED_MARGIN';
 
 export interface WalletProfile {
   id: string;
@@ -8,6 +9,8 @@ export interface WalletProfile {
   isTestnet: boolean;
   isValidated: boolean;
   createdAt: number;
+  apiKey?: string;
+  apiSecret?: string;
 }
 
 export interface BinanceCredentials {
@@ -16,6 +19,8 @@ export interface BinanceCredentials {
   isTestnet: boolean;
   isValidated: boolean;
   isServerConfigured?: boolean;
+  apiKey?: string;
+  apiSecret?: string;
 }
 
 export interface TelegramSettings {
@@ -40,6 +45,7 @@ export type MarketRegime =
 
 export interface BotSettings {
   // Position & Risk Sizing
+  positionSizingMode?: PositionSizingMode; // 'RISK_PORTFOLIO_DYNAMIC' (Risk Budget / SL Distance) or 'STRICT_FIXED_MARGIN' (Strict USD Margin Cap)
   maxConcurrentPositions: number; // e.g. 1 to 10
   riskPerTradePercent: number; // e.g. 1.0% to 2.5% of account equity
   positionSizeUsd: number; // Fallback or fixed reference USD amount (e.g. $2.5, $10, $50)
@@ -69,6 +75,9 @@ export interface BotSettings {
   multiTargetTrailing: boolean; // Moves SL to TP1, then TP2
   unlimitedHoldTime: boolean;
   maxTradeDurationHours: number; // Expiry duration if unlimitedHoldTime is false
+  scalpingMode?: boolean; // Fast Scalping Mode (Hit & Run)
+  scalpingDurationMinutes?: number; // Duration cutoff in minutes (default: 15)
+  scalpingProfitLockPercent?: number; // Target ROI % to auto-harvest profit in Hit & Run scalping (default: 25%)
 
   // Market Filters
   minAiConfidence: number; // e.g. 75%
@@ -99,6 +108,20 @@ export interface AccountBalance {
 export type ProtectiveOrderStatus = 'UNSUBMITTED' | 'SUBMITTED' | 'ACTIVE' | 'FILLED' | 'REJECTED' | 'CANCELED';
 export type ReconciliationStatus = 'IN_SYNC' | 'DESYNC_DETECTED' | 'RECONCILING' | 'ERROR';
 
+// Skill 13: Adaptive Position Health Status
+export type PositionHealthStatus = 'HEALTHY' | 'WEAKENING' | 'INVALIDATED' | 'EMERGENCY';
+
+export interface AIDiagnosis {
+  recoveryProbability: number; // 0 to 100%
+  healthStatus?: PositionHealthStatus;
+  recommendation: 'HOLD' | 'AI_EARLY_CUT' | 'AI_DCA_REINFORCE' | 'AI_BREAKEVEN_EXIT' | 'AI_EARLY_PROFIT_TAKE';
+  labelAr: string;
+  labelEn: string;
+  reasoningAr: string;
+  reasoningEn: string;
+  analyzedAt: number;
+}
+
 export interface Position {
   id: string;
   symbol: string;
@@ -112,6 +135,8 @@ export interface Position {
   liquidationPrice: number;
   unrealizedProfit: number;
   pnlPercentage: number;
+  healthStatus?: PositionHealthStatus;
+  invalidationPrice?: number;
 
   // Planned & Confirmed Exchange Protective Orders
   stopLossPrice: number;
@@ -147,6 +172,10 @@ export interface Position {
   rationale: string;
   isRealOrder?: boolean;
   isTestnet?: boolean;
+
+  // AI Position Doctor & Dynamic Management
+  aiDiagnosis?: AIDiagnosis;
+  dcaCount?: number;
 }
 
 export interface ClosedTrade {
@@ -177,7 +206,11 @@ export interface ClosedTrade {
     | 'MANUAL_CLOSE'
     | 'KILL_SWITCH'
     | 'LIQUIDATION'
-    | 'RECONCILIATION_DESYNC';
+    | 'RECONCILIATION_DESYNC'
+    | 'AI_EARLY_CUT'
+    | 'AI_EARLY_PROFIT_TAKE'
+    | 'AI_BREAKEVEN_EXIT'
+    | 'AI_DCA_REINFORCE';
   aiConfidence: number;
   wasWinning: boolean;
   tpLevelReached?: number;
@@ -267,6 +300,21 @@ export interface MultiTimeframeCandles {
   '4h': Candle[];
 }
 
+// Skill 11: Trade Quality Ranking 100-Point Rubric
+export interface TradeQualityBreakdown {
+  totalScore: number; // 0 to 100
+  tier: 'EXCELLENT' | 'GOOD' | 'WATCH' | 'REJECT'; // 85-100: Excellent, 75-84: Good, 65-74: Watch, <65: Reject
+  marketStructure: number; // Max 20 pts
+  entryQuality: number; // Max 20 pts
+  liquidityAndVolume: number; // Max 15 pts
+  mtfAgreement: number; // Max 15 pts
+  momentumIndicators: number; // Max 10 pts
+  futuresConfirmation: number; // Max 10 pts
+  riskRewardAndCosts: number; // Max 10 pts
+  invalidationPrice?: number;
+  setupCategory?: 'SMC_ORDER_BLOCK' | 'ICT_FVG' | 'LIQUIDITY_SWEEP' | 'BREAKOUT_RETEST' | 'PULLBACK_TREND' | 'QUANT_MOMENTUM';
+}
+
 export interface EvaluatedCandidate {
   symbol: string;
   qualified: boolean;
@@ -283,6 +331,8 @@ export interface EvaluatedCandidate {
   atr: number;
   riskRewardRatio: number;
   suggestedLeverage: number;
+  qualityBreakdown?: TradeQualityBreakdown;
+  invalidationPrice?: number;
 }
 
 export interface CapitalProfile {
@@ -293,9 +343,9 @@ export interface CapitalProfile {
 }
 
 export const DEFAULT_CAPITAL_PROFILE: CapitalProfile = {
-  capitalUsd: 20,
-  riskPerTradePercent: 1,
-  maxDailyLossPercent: 5,
+  capitalUsd: 0, // 0 = AUTO (Live Account Equity)
+  riskPerTradePercent: 1.0,
+  maxDailyLossPercent: 0, // 0 = Disabled
   maxOpenPositions: 4,
 };
 
@@ -457,3 +507,23 @@ export interface ToastAlert {
   pnlPercentage?: number;
   timestamp: number;
 }
+
+export interface AIDiagnosisReport {
+  scanned: number;
+  closedEarly: number;
+  closedBreakeven: number;
+  profitLocked: number;
+  reinforced: number;
+  held: number;
+  timestamp: number;
+  items: Array<{
+    symbol: string;
+    side: TradeDirection;
+    pnlPercentage: number;
+    recoveryProbability: number;
+    action: string;
+    actionType: AIDiagnosis['recommendation'];
+    reason: string;
+  }>;
+}
+

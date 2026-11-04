@@ -19,6 +19,7 @@ import {
 export const MetricCards: React.FC = () => {
   const {
     t,
+    language,
     performanceMetrics,
     positions,
     balance,
@@ -26,14 +27,18 @@ export const MetricCards: React.FC = () => {
     settings,
   } = useTrading();
 
-  const isRiskSafe = portfolioExposure.totalRiskToStopUsd <= portfolioExposure.availableRiskBudgetUsd * 1.5;
+  const isArabic = language === 'ar';
+  const totalAllowedRisk = portfolioExposure.totalRiskToStopUsd + portfolioExposure.availableRiskBudgetUsd;
+  const isRiskSafe = totalAllowedRisk <= 0 || portfolioExposure.totalRiskToStopUsd <= totalAllowedRisk * 1.1;
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
-      {/* 1. Net PnL */}
+      {/* 1. Realized PnL (الأرباح أو الخسائر المحققة) */}
       <div className="bg-[#121824] border border-slate-800/80 rounded-xl p-3 shadow-md hover:border-slate-700 transition">
         <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-          <span className="truncate">{t.netProfit}</span>
+          <span className="truncate font-semibold text-slate-300">
+            {isArabic ? 'الأرباح المحققة (Realized)' : 'Realized PnL'}
+          </span>
           <DollarSign className="w-3.5 h-3.5 text-amber-400 shrink-0" />
         </div>
         <div
@@ -47,15 +52,18 @@ export const MetricCards: React.FC = () => {
         >
           {performanceMetrics.netProfitUsd >= 0 ? '+' : ''}${performanceMetrics.netProfitUsd.toFixed(2)}
         </div>
-        <div className="text-[10px] text-slate-500 mt-0.5 truncate">
-          Gross: ${performanceMetrics.grossProfitUsd.toFixed(1)}
+        <div className="text-[10px] text-slate-500 mt-0.5 truncate flex items-center justify-between">
+          <span>{isArabic ? `فوز: ${performanceMetrics.winRatePercent}%` : `Win: ${performanceMetrics.winRatePercent}%`}</span>
+          <span>{performanceMetrics.totalTrades} {isArabic ? 'مغلقة' : 'closed'}</span>
         </div>
       </div>
 
-      {/* 2. Unrealized PnL (Live) */}
+      {/* 2. Unrealized PnL (الأرباح أو الخسائر غير المحققة اللحظية) */}
       <div className="bg-[#121824] border border-slate-800/80 rounded-xl p-3 shadow-md hover:border-slate-700 transition">
         <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-          <span className="truncate">{t.unrealizedPnl}</span>
+          <span className="truncate font-semibold text-slate-300">
+            {isArabic ? 'غير المحققة (Unrealized)' : 'Unrealized PnL'}
+          </span>
           <TrendingUp className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
         </div>
         <div
@@ -69,8 +77,9 @@ export const MetricCards: React.FC = () => {
         >
           {balance.totalUnrealizedProfit >= 0 ? '+' : ''}${balance.totalUnrealizedProfit.toFixed(2)}
         </div>
-        <div className="text-[10px] text-slate-500 mt-0.5">
-          {positions.length} {t.activePositionsCount}
+        <div className="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between">
+          <span>{positions.length} {isArabic ? 'صفقات نشطة' : 'open trades'}</span>
+          <span className="text-cyan-400 font-mono">LIVE</span>
         </div>
       </div>
 

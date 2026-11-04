@@ -83,9 +83,8 @@ export class BinanceWsService {
     this.isExplicitlyClosed = false;
     this.cleanup();
 
-    const baseUrl = this.isTestnet
-      ? 'wss://stream.binancefuture.com/ws/!ticker@arr'
-      : 'wss://fstream.binance.com/ws/!ticker@arr';
+    // Always use real live Binance Futures market ticker stream (free, public, real-time)
+    const baseUrl = 'wss://fstream.binance.com/ws/!ticker@arr';
 
     this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 

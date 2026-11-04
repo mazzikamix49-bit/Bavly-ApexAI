@@ -48,9 +48,11 @@ export class BinanceTestnetAccountStateProvider implements AccountStateProvider 
    */
   public async getAccountState(): Promise<AccountState> {
     const timestamp = Date.now();
+    const effectiveKey = this.apiKey || (process.env.BINANCE_TESTNET_API_KEY || '').trim();
+    const effectiveSecret = this.apiSecret || (process.env.BINANCE_TESTNET_API_SECRET || '').trim();
 
     // 1. Guard against missing credentials
-    if (!this.apiKey || !this.apiSecret) {
+    if (!effectiveKey || !effectiveSecret) {
       return {
         available: false,
         source: 'BINANCE_FUTURES_TESTNET',
@@ -64,7 +66,7 @@ export class BinanceTestnetAccountStateProvider implements AccountStateProvider 
       // 2. Build signed query string (HMAC SHA256)
       const queryString = `recvWindow=${this.recvWindow}&timestamp=${timestamp}`;
       const signature = crypto
-        .createHmac('sha256', this.apiSecret)
+        .createHmac('sha256', effectiveSecret)
         .update(queryString)
         .digest('hex');
 
@@ -75,7 +77,7 @@ export class BinanceTestnetAccountStateProvider implements AccountStateProvider 
       const res = await fetch(url, {
         method: 'GET',
         headers: {
-          'X-MBX-APIKEY': this.apiKey,
+          'X-MBX-APIKEY': effectiveKey,
           'Accept': 'application/json',
           'User-Agent': 'ApexAI-Worker/1.0',
         },

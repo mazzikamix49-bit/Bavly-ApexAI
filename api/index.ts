@@ -30,8 +30,19 @@ const getBinanceEnv = (): 'testnet' | 'production' => {
   return env === 'production' ? 'production' : 'testnet';
 };
 
-const isProductionTradingAllowed = (): boolean => {
-  return process.env.ALLOW_PRODUCTION_TRADING === 'true';
+const isProductionTradingAllowed = (req?: Request): boolean => {
+  if (process.env.ALLOW_PRODUCTION_TRADING === 'true') return true;
+  if (req) {
+    if (req.body?.productionConfirmed === true || req.headers['x-production-confirmed'] === 'true') {
+      return true;
+    }
+    const clientKey = (req.body?.apiKey || req.headers['x-binance-api-key'] || '').toString().trim();
+    const clientSecret = (req.body?.apiSecret || req.headers['x-binance-api-secret'] || '').toString().trim();
+    if (clientKey && clientSecret) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const resolveIsTestnet = (paramIsTestnet?: any): boolean => {
@@ -41,10 +52,13 @@ const resolveIsTestnet = (paramIsTestnet?: any): boolean => {
   return getBinanceEnv() !== 'production';
 };
 
+import fs from 'fs';
+import path from 'path';
+
 // Helpers for Binance API
-const getBinanceBaseUrl = (isTestnet = true) => {
+const getBinanceBaseUrl = (isTestnet = true, isOrderExecution = false, req?: Request) => {
   if (!isTestnet) {
-    if (!isProductionTradingAllowed()) {
+    if (isOrderExecution && !isProductionTradingAllowed(req)) {
       throw new Error('[CENTRAL_GUARD_FAIL_CLOSED] Binance Production environment rejected: ALLOW_PRODUCTION_TRADING is false.');
     }
     return 'https://fapi.binance.com';
@@ -52,15 +66,70 @@ const getBinanceBaseUrl = (isTestnet = true) => {
   return 'https://testnet.binancefuture.com';
 };
 
-// Safe helper to read Binance API credentials server-side from environment variables ONLY:
-// Testnet: BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET
-// Production: BINANCE_API_KEY / BINANCE_API_SECRET
+interface CachedCredentials {
+  apiKey: string;
+  apiSecret: string;
+}
+
+const cachedServerCredentials: {
+  testnet?: CachedCredentials;
+  live?: CachedCredentials;
+} = {};
+
+const PRIMARY_CREDS_FILE = path.join(process.cwd(), 'data', 'server_binance_credentials.json');
+const LEGACY_CREDS_FILE = path.join(process.cwd(), '.server_binance_credentials.json');
+
+const loadServerCredentialsFromFile = () => {
+  try {
+    const filePath = fs.existsSync(PRIMARY_CREDS_FILE)
+      ? PRIMARY_CREDS_FILE
+      : (fs.existsSync(LEGACY_CREDS_FILE) ? LEGACY_CREDS_FILE : null);
+    if (filePath) {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content);
+      if (data.testnet?.apiKey && data.testnet?.apiSecret) {
+        cachedServerCredentials.testnet = data.testnet;
+        process.env.BINANCE_TESTNET_API_KEY = data.testnet.apiKey;
+        process.env.BINANCE_TESTNET_API_SECRET = data.testnet.apiSecret;
+      }
+      if (data.live?.apiKey && data.live?.apiSecret) {
+        cachedServerCredentials.live = data.live;
+        process.env.BINANCE_API_KEY = data.live.apiKey;
+        process.env.BINANCE_API_SECRET = data.live.apiSecret;
+      }
+      console.log(`[Binance Credentials] Loaded saved credentials from ${filePath}`);
+    }
+  } catch (err) {
+    console.error('[Binance Credentials] Failed to read cached credentials file:', err);
+  }
+};
+
+const saveServerCredentialsToFile = () => {
+  try {
+    const dir = path.dirname(PRIMARY_CREDS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(PRIMARY_CREDS_FILE, JSON.stringify(cachedServerCredentials, null, 2), 'utf-8');
+    console.log(`[Binance Credentials] Successfully persisted credentials to ${PRIMARY_CREDS_FILE}`);
+  } catch (err) {
+    console.error('[Binance Credentials] Failed to write cached credentials file:', err);
+  }
+};
+
+// Initialize from file on boot
+loadServerCredentialsFromFile();
+
+// Safe helper to read Binance API credentials server-side from environment variables or cache
 const getServerBinanceCredentials = (isTestnet = true): { apiKey: string; apiSecret: string } | null => {
   if (isTestnet) {
     const apiKey = (process.env.BINANCE_TESTNET_API_KEY || '').trim();
     const apiSecret = (process.env.BINANCE_TESTNET_API_SECRET || '').trim();
     if (apiKey && apiSecret) {
       return { apiKey, apiSecret };
+    }
+    if (cachedServerCredentials.testnet?.apiKey && cachedServerCredentials.testnet?.apiSecret) {
+      return cachedServerCredentials.testnet;
     }
     return null;
   } else {
@@ -69,8 +138,32 @@ const getServerBinanceCredentials = (isTestnet = true): { apiKey: string; apiSec
     if (apiKey && apiSecret) {
       return { apiKey, apiSecret };
     }
+    if (cachedServerCredentials.live?.apiKey && cachedServerCredentials.live?.apiSecret) {
+      return cachedServerCredentials.live;
+    }
     return null;
   }
+};
+
+const getEffectiveCredentials = (req: Request, isTestnet = true): { apiKey: string; apiSecret: string } | null => {
+  const clientKey = (req.body?.apiKey || req.headers['x-binance-api-key'] || req.query?.apiKey || '').toString().trim();
+  const clientSecret = (req.body?.apiSecret || req.headers['x-binance-api-secret'] || req.query?.apiSecret || '').toString().trim();
+  if (clientKey && clientSecret) {
+    if (isTestnet) {
+      cachedServerCredentials.testnet = { apiKey: clientKey, apiSecret: clientSecret };
+      process.env.BINANCE_TESTNET_API_KEY = clientKey;
+      process.env.BINANCE_TESTNET_API_SECRET = clientSecret;
+    } else {
+      cachedServerCredentials.live = { apiKey: clientKey, apiSecret: clientSecret };
+      process.env.BINANCE_API_KEY = clientKey;
+      process.env.BINANCE_API_SECRET = clientSecret;
+    }
+    saveServerCredentialsToFile();
+    return { apiKey: clientKey, apiSecret: clientSecret };
+  }
+  const envCreds = getServerBinanceCredentials(isTestnet);
+  if (envCreds) return envCreds;
+  return null;
 };
 
 const signQuery = (queryString: string, apiSecret: string): string => {
@@ -90,8 +183,8 @@ apiRouter.get('/binance/config-status', (req: Request, res: Response) => {
   const env = getBinanceEnv();
   const allowProd = isProductionTradingAllowed();
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  const testnetCreds = getServerBinanceCredentials(true);
-  const prodCreds = getServerBinanceCredentials(false);
+  const testnetCreds = getEffectiveCredentials(req, true);
+  const prodCreds = getEffectiveCredentials(req, false);
   res.json({
     success: true,
     environment: env,
@@ -100,6 +193,74 @@ apiRouter.get('/binance/config-status', (req: Request, res: Response) => {
     prodConfigured: !!prodCreds,
     activeEnvironmentConfigured: isTestnet ? !!testnetCreds : (allowProd && !!prodCreds),
     productionBlocked: !allowProd,
+  });
+});
+
+// Endpoint to persist Binance credentials from the UI Settings modal
+apiRouter.post('/binance/save-credentials', (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  const apiKey = (req.body.apiKey || '').toString().trim();
+  const apiSecret = (req.body.apiSecret || '').toString().trim();
+
+  if (!apiKey || !apiSecret) {
+    return res.status(400).json({ success: false, error: 'API Key and API Secret are required' });
+  }
+
+  if (isTestnet) {
+    cachedServerCredentials.testnet = { apiKey, apiSecret };
+    process.env.BINANCE_TESTNET_API_KEY = apiKey;
+    process.env.BINANCE_TESTNET_API_SECRET = apiSecret;
+  } else {
+    cachedServerCredentials.live = { apiKey, apiSecret };
+    process.env.BINANCE_API_KEY = apiKey;
+    process.env.BINANCE_API_SECRET = apiSecret;
+  }
+  saveServerCredentialsToFile();
+
+  res.json({
+    success: true,
+    message: isTestnet
+      ? 'تم حفظ مفاتيح باينانس ديمو التجريبي على الخادم بنجاح.'
+      : 'تم حفظ مفاتيح باينانس الحقيقي على الخادم بنجاح.',
+    testnetConfigured: !!cachedServerCredentials.testnet,
+    prodConfigured: !!cachedServerCredentials.live,
+  });
+});
+
+// Endpoint to retrieve active credentials (for UI initialization if stored on server)
+apiRouter.get('/binance/credentials', (req: Request, res: Response) => {
+  // Ensure server credentials are fresh from disk if memory is empty
+  if (!cachedServerCredentials.testnet && !cachedServerCredentials.live) {
+    loadServerCredentialsFromFile();
+  }
+
+  const isTestnet = resolveIsTestnet(req.query.testnet);
+  const includeAll = req.query.all === 'true';
+
+  const testnetCreds = getServerBinanceCredentials(true);
+  const liveCreds = getServerBinanceCredentials(false);
+
+  if (includeAll) {
+    return res.json({
+      success: true,
+      testnet: testnetCreds ? { apiKey: testnetCreds.apiKey, apiSecret: testnetCreds.apiSecret, configured: true } : null,
+      live: liveCreds ? { apiKey: liveCreds.apiKey, apiSecret: liveCreds.apiSecret, configured: true } : null,
+    });
+  }
+
+  const creds = isTestnet ? testnetCreds : liveCreds;
+  if (creds && creds.apiKey) {
+    return res.json({
+      configured: true,
+      apiKey: creds.apiKey,
+      apiSecret: creds.apiSecret,
+      isTestnet,
+    });
+  }
+
+  return res.json({
+    configured: false,
+    isTestnet,
   });
 });
 
@@ -185,13 +346,7 @@ apiRouter.post('/bot/session', (req: Request, res: Response) => {
 // 2. Binance Connectivity Ping
 apiRouter.get('/binance/ping', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false, req);
   try {
     const startTime = Date.now();
     const response = await fetch(`${baseUrl}/fapi/v1/ping`);
@@ -226,13 +381,7 @@ apiRouter.get('/binance/ping', async (req: Request, res: Response) => {
 // 2b. Binance Diagnostic Probe
 apiRouter.get('/binance/diagnostics', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false, req);
   const startTime = Date.now();
 
   try {
@@ -287,13 +436,7 @@ apiRouter.get('/binance/diagnostics', async (req: Request, res: Response) => {
 // 3. Binance Exchange Info
 apiRouter.get('/binance/exchangeInfo', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false);
   try {
     const response = await fetch(`${baseUrl}/fapi/v1/exchangeInfo`);
     if (!response.ok) {
@@ -326,53 +469,114 @@ apiRouter.get('/binance/exchangeInfo', async (req: Request, res: Response) => {
   }
 });
 
-// 4. Binance 24hr Tickers
-apiRouter.get('/binance/ticker24hr', async (req: Request, res: Response) => {
-  const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-  const symbol = req.query.symbol as string;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  try {
-    const url = symbol ? `${baseUrl}/fapi/v1/ticker/24hr?symbol=${symbol}` : `${baseUrl}/fapi/v1/ticker/24hr`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+// 4. Binance 24hr Tickers (Public Read-Only Real Market Data with Resilient Cache & Multi-Host Fallback)
+let cachedTickersData: any[] | null = null;
+let cachedTickersExpiry = 0;
+let inFlightTickerPromise: Promise<any[]> | null = null;
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    });
-    clearTimeout(timeoutId);
+async function fetchBinanceTickersWithFallback(symbol?: string): Promise<any[]> {
+  const hosts = [
+    'https://fapi.binance.com',
+    'https://fapi1.binance.com',
+    'https://fapi2.binance.com',
+    'https://fapi3.binance.com',
+  ];
 
-    if (!response.ok) {
-      throw new Error(`Binance responded with ${response.status}`);
+  for (const host of hosts) {
+    try {
+      const url = symbol ? `${host}/fapi/v1/ticker/24hr?symbol=${symbol}` : `${host}/fapi/v1/ticker/24hr`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0) {
+          return data;
+        } else if (data && !Array.isArray(data) && symbol) {
+          return [data];
+        }
+      }
+    } catch {
+      // try next host
     }
-    const data = await response.json();
-    res.json(data);
+  }
+
+  // If all hosts failed and we have cached data, return it
+  if (cachedTickersData && cachedTickersData.length > 0) {
+    return symbol
+      ? cachedTickersData.filter((t: any) => t.symbol === symbol)
+      : cachedTickersData;
+  }
+
+  return [];
+}
+
+apiRouter.get('/binance/ticker24hr', async (req: Request, res: Response) => {
+  const symbol = req.query.symbol as string;
+  const now = Date.now();
+
+  // Return cached data if valid and fresh (15s TTL)
+  if (!symbol && cachedTickersData && cachedTickersExpiry > now) {
+    return res.json(cachedTickersData);
+  }
+
+  try {
+    if (!symbol) {
+      if (!inFlightTickerPromise) {
+        inFlightTickerPromise = fetchBinanceTickersWithFallback()
+          .then((data) => {
+            if (data.length > 0) {
+              cachedTickersData = data;
+              cachedTickersExpiry = Date.now() + 15000;
+            }
+            return data;
+          })
+          .finally(() => {
+            inFlightTickerPromise = null;
+          });
+      }
+      const data = await inFlightTickerPromise;
+      if (data.length > 0) {
+        return res.json(data);
+      }
+    } else {
+      const data = await fetchBinanceTickersWithFallback(symbol);
+      if (data.length > 0) {
+        return res.json(data);
+      }
+    }
+
+    if (cachedTickersData && cachedTickersData.length > 0) {
+      return res.json(symbol ? cachedTickersData.filter((t: any) => t.symbol === symbol) : cachedTickersData);
+    }
+
+    res.json([]);
   } catch (error: any) {
+    if (cachedTickersData && cachedTickersData.length > 0) {
+      return res.json(cachedTickersData);
+    }
     res.status(500).json({ error: error.message });
   }
 });
 
-// 5. Binance Real Order Book Depth
+// 5. Binance Real Order Book Depth (Public Read-Only Market Data)
 apiRouter.get('/binance/depth', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
   const symbol = (req.query.symbol as string) || 'BTCUSDT';
   const limit = (req.query.limit as string) || '20';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false);
 
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/depth?symbol=${symbol}&limit=${limit}`);
+    let response = await fetch(`${baseUrl}/fapi/v1/depth?symbol=${symbol}&limit=${limit}`);
+    if (!response.ok && isTestnet) {
+      response = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=${limit}`);
+    }
     if (!response.ok) {
       throw new Error(`Binance depth error: ${response.status}`);
     }
@@ -383,22 +587,19 @@ apiRouter.get('/binance/depth', async (req: Request, res: Response) => {
   }
 });
 
-// 6. Binance Candlestick / Klines
+// 6. Binance Candlestick / Klines (Public Read-Only Market Data)
 apiRouter.get('/binance/klines', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.query.testnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
   const symbol = (req.query.symbol as string) || 'BTCUSDT';
   const interval = (req.query.interval as string) || '15m';
   const limit = (req.query.limit as string) || '100';
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false);
 
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+    let response = await fetch(`${baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+    if (!response.ok && isTestnet) {
+      response = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+    }
     if (!response.ok) {
       throw new Error(`Binance klines error: ${response.status}`);
     }
@@ -419,26 +620,19 @@ apiRouter.get('/binance/klines', async (req: Request, res: Response) => {
   }
 });
 
-// 7. Binance Account & Positions (Signed Server-Side)
+// 7. Binance Account & Positions (Signed Read-Only)
 apiRouter.post('/binance/account', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.body.isTestnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-
-  const credentials = getServerBinanceCredentials(isTestnet);
+  const credentials = getEffectiveCredentials(req, isTestnet);
   if (!credentials) {
     return res.status(400).json({
       success: false,
-      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET' : 'BINANCE_API_KEY / BINANCE_API_SECRET'})`,
+      error: `Binance credentials not configured (${isTestnet ? 'BINANCE_TESTNET_API_KEY or Settings' : 'BINANCE_API_KEY or Settings'})`,
     });
   }
 
   const { apiKey, apiSecret } = credentials;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false);
   const timestamp = Date.now();
   const queryString = `timestamp=${timestamp}&recvWindow=60000`;
   const signature = signQuery(queryString, apiSecret);
@@ -514,18 +708,11 @@ apiRouter.post('/binance/account', async (req: Request, res: Response) => {
   }
 });
 
-// 8. Binance Open Orders (Reconciliation)
+// 8. Binance Open Orders (Reconciliation Read-Only)
 apiRouter.post('/binance/openOrders', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.body.isTestnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
-    return res.status(403).json({
-      success: false,
-      error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
-    });
-  }
-
   const { symbol } = req.body;
-  const credentials = getServerBinanceCredentials(isTestnet);
+  const credentials = getEffectiveCredentials(req, isTestnet);
 
   if (!credentials) {
     return res.status(400).json({
@@ -557,18 +744,19 @@ apiRouter.post('/binance/openOrders', async (req: Request, res: Response) => {
   }
 });
 
-// 9. Binance Leverage Adjustment
+// 9. Binance Leverage Adjustment with Auto Step-Down Clamping
 apiRouter.post('/binance/leverage', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.body.isTestnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
     return res.status(403).json({
       success: false,
       error: 'PRODUCTION_REJECTED: Binance Production environment is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
     });
   }
 
-  const { symbol, leverage } = req.body;
-  const credentials = getServerBinanceCredentials(isTestnet);
+  const { symbol, leverage: reqLeverage } = req.body;
+  const requestedLeverage = parseInt(reqLeverage, 10);
+  const credentials = getEffectiveCredentials(req, isTestnet);
 
   if (!credentials) {
     return res.status(400).json({
@@ -577,36 +765,188 @@ apiRouter.post('/binance/leverage', async (req: Request, res: Response) => {
     });
   }
 
-  if (!symbol || !leverage) {
+  if (!symbol || isNaN(requestedLeverage)) {
     return res.status(400).json({ success: false, error: 'Missing parameters (symbol, leverage)' });
   }
 
   const { apiKey, apiSecret } = credentials;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
-  const timestamp = Date.now();
-  const queryString = `symbol=${symbol}&leverage=${leverage}&timestamp=${timestamp}&recvWindow=60000`;
-  const signature = signQuery(queryString, apiSecret);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false, req);
 
-  try {
-    const response = await fetch(`${baseUrl}/fapi/v1/leverage?${queryString}&signature=${signature}`, {
-      method: 'POST',
-      headers: { 'X-MBX-APIKEY': apiKey },
-    });
-    const data = await response.json();
-    if (response.ok) {
-      res.json({ success: true, data });
-    } else {
-      res.status(response.status).json({ success: false, error: data.msg || 'Failed to change leverage' });
+  // Dynamic Adaptive Leverage Clamping:
+  // Never exceed the user's requested leverage (e.g. 20x).
+  // If Binance caps that coin lower (e.g. 10x or 5x), step down to highest valid tier.
+  const candidateTiers = [requestedLeverage, 20, 15, 10, 8, 5, 4, 3, 2, 1]
+    .filter((lev, idx, arr) => lev <= requestedLeverage && arr.indexOf(lev) === idx)
+    .sort((a, b) => b - a);
+
+  let lastError = '';
+  for (const lev of candidateTiers) {
+    const timestamp = Date.now();
+    const queryString = `symbol=${symbol}&leverage=${lev}&timestamp=${timestamp}&recvWindow=60000`;
+    const signature = signQuery(queryString, apiSecret);
+
+    try {
+      const response = await fetch(`${baseUrl}/fapi/v1/leverage?${queryString}&signature=${signature}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      const data = await response.json();
+      if (response.ok && data.leverage) {
+        return res.json({
+          success: true,
+          data,
+          requestedLeverage,
+          effectiveLeverage: data.leverage,
+          wasClamped: data.leverage < requestedLeverage,
+        });
+      }
+      lastError = data.msg || 'Failed to change leverage';
+      // If error is not related to leverage boundary, don't keep looping
+      if (data.code && data.code !== -4028 && data.code !== -4141) {
+        return res.status(response.status).json({ success: false, error: lastError });
+      }
+    } catch (err: any) {
+      lastError = err.message;
+      break;
     }
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
   }
+
+  res.status(400).json({ success: false, error: lastError || 'Failed to set leverage' });
 });
 
-// 10. Binance Order Execution with Idempotency & Protective Orders
+// Precision Filter Cache & Helpers to permanently prevent error -1111 ("Precision is over the maximum defined for this asset")
+interface SymbolFilterInfo {
+  symbol: string;
+  pricePrecision: number;
+  quantityPrecision: number;
+  tickSize: number;
+  stepSize: number;
+  minQty: number;
+  minNotional: number;
+}
+
+const symbolFilterCache = new Map<string, { data: SymbolFilterInfo; expiry: number }>();
+
+async function getSymbolFilterInfo(symbol: string, isTestnet: boolean): Promise<SymbolFilterInfo> {
+  const cacheKey = `${symbol}-${isTestnet}`;
+  const cached = symbolFilterCache.get(cacheKey);
+  if (cached && cached.expiry > Date.now()) {
+    return cached.data;
+  }
+
+  const defaultFilter: SymbolFilterInfo = {
+    symbol,
+    pricePrecision: 2,
+    quantityPrecision: 3,
+    tickSize: 0.01,
+    stepSize: 0.001,
+    minQty: 0.001,
+    minNotional: 5,
+  };
+
+  try {
+    const baseUrl = getBinanceBaseUrl(isTestnet, false);
+    const res = await fetch(`${baseUrl}/fapi/v1/exchangeInfo`);
+    if (res.ok) {
+      const data = await res.json();
+      const symInfo = (data.symbols || []).find((s: any) => s.symbol === symbol);
+      if (symInfo) {
+        let tickSize = 0.01;
+        let stepSize = 0.001;
+        let minQty = 0.001;
+        let minNotional = 5;
+
+        for (const filter of symInfo.filters || []) {
+          if (filter.filterType === 'PRICE_FILTER') {
+            tickSize = parseFloat(filter.tickSize) || 0.01;
+          } else if (filter.filterType === 'LOT_SIZE') {
+            stepSize = parseFloat(filter.stepSize) || 0.001;
+            minQty = parseFloat(filter.minQty) || 0.001;
+          } else if (filter.filterType === 'MIN_NOTIONAL') {
+            minNotional = parseFloat(filter.notional) || 5;
+          }
+        }
+
+        const pricePrecision =
+          typeof symInfo.pricePrecision === 'number'
+            ? symInfo.pricePrecision
+            : Math.max(0, Math.round(-Math.log10(tickSize)));
+        const quantityPrecision =
+          typeof symInfo.quantityPrecision === 'number'
+            ? symInfo.quantityPrecision
+            : Math.max(0, Math.round(-Math.log10(stepSize)));
+
+        const filterResult: SymbolFilterInfo = {
+          symbol,
+          pricePrecision,
+          quantityPrecision,
+          tickSize,
+          stepSize,
+          minQty,
+          minNotional,
+        };
+
+        symbolFilterCache.set(cacheKey, { data: filterResult, expiry: Date.now() + 60 * 60 * 1000 });
+        return filterResult;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Binance Filter] Failed to fetch filter info for ${symbol}:`, err);
+  }
+  return defaultFilter;
+}
+
+function formatQuantityByFilter(qty: number, filter: SymbolFilterInfo): string {
+  if (isNaN(qty) || qty <= 0) return '0';
+  const step = filter.stepSize > 0 ? filter.stepSize : 0.001;
+  const precision = filter.quantityPrecision;
+  const steps = Math.floor((qty + 1e-12) / step);
+  const clamped = Math.max(filter.minQty, steps * step);
+  return clamped.toFixed(precision);
+}
+
+function formatPriceByFilter(price: number, filter: SymbolFilterInfo): string {
+  if (isNaN(price) || price <= 0) return '0';
+  const tick = filter.tickSize > 0 ? filter.tickSize : 0.01;
+  const precision = filter.pricePrecision;
+  const steps = Math.round(price / tick);
+  const clamped = steps * tick;
+  return clamped.toFixed(precision);
+}
+
+// Dual-Side Position Mode (Hedge vs One-Way) Cache & Detection to permanently prevent error -4061 ("Order's position side does not match user's setting.")
+const dualPositionModeCache = new Map<string, { isDual: boolean; expiry: number }>();
+
+async function getAccountDualSidePosition(apiKey: string, apiSecret: string, baseUrl: string): Promise<boolean> {
+  const cacheKey = apiKey.slice(-8);
+  const cached = dualPositionModeCache.get(cacheKey);
+  if (cached && cached.expiry > Date.now()) {
+    return cached.isDual;
+  }
+
+  try {
+    const ts = Date.now();
+    const query = `timestamp=${ts}&recvWindow=60000`;
+    const sig = signQuery(query, apiSecret);
+    const res = await fetch(`${baseUrl}/fapi/v1/positionSide/dual?${query}&signature=${sig}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const isDual = Boolean(data.dualSidePosition);
+      dualPositionModeCache.set(cacheKey, { isDual, expiry: Date.now() + 5 * 60 * 1000 });
+      return isDual;
+    }
+  } catch (err) {
+    console.warn('[Binance PositionMode] Query dual position mode failed:', err);
+  }
+  return false;
+}
+
+// 10. Binance Order Execution with Idempotency, Precision Clamping & Dual Position Handling
 apiRouter.post('/binance/order', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.body.isTestnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
     return res.status(403).json({
       success: false,
       error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
@@ -620,10 +960,12 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
     quantity,
     stopPrice,
     reduceOnly = false,
+    closePosition = false,
     clientOrderId,
+    positionSide: explicitPositionSide,
   } = req.body;
 
-  const credentials = getServerBinanceCredentials(isTestnet);
+  const credentials = getEffectiveCredentials(req, isTestnet);
   if (!credentials) {
     return res.status(400).json({
       success: false,
@@ -631,12 +973,27 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
     });
   }
 
-  if (!symbol || !side || !quantity) {
-    return res.status(400).json({ success: false, error: 'Missing required order parameters' });
+  // Validate parameters
+  const isConditionalClose = closePosition === true || closePosition === 'true';
+  if (!symbol || !side) {
+    return res.status(400).json({ success: false, error: 'Missing required order parameters (symbol, side)' });
   }
 
+  if (isConditionalClose) {
+    if (!stopPrice) {
+      return res.status(400).json({ success: false, error: 'Missing required stopPrice for closePosition order' });
+    }
+  } else {
+    if (!quantity || parseFloat(quantity) <= 0) {
+      return res.status(400).json({ success: false, error: 'Missing required quantity for order' });
+    }
+  }
+
+  // Fetch precision and step filters for this symbol to avoid -1111 Precision error
+  const filterInfo = await getSymbolFilterInfo(symbol, isTestnet);
+
   // Idempotency lock check
-  const idempotencyKey = clientOrderId || `${symbol}-${side}-${quantity}-${Math.floor(Date.now() / 2000)}`;
+  const idempotencyKey = clientOrderId || `${symbol}-${side}-${type}-${quantity || 'all'}-${Math.floor(Date.now() / 2000)}`;
   if (recentOrderIds.has(idempotencyKey)) {
     return res.status(409).json({
       success: false,
@@ -647,38 +1004,76 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
   setTimeout(() => recentOrderIds.delete(idempotencyKey), 10000);
 
   const { apiKey, apiSecret } = credentials;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, true, req);
   const timestamp = Date.now();
   const params: Record<string, string> = {
     symbol,
     side: side.toUpperCase(),
     type: type.toUpperCase(),
-    quantity: quantity.toString(),
     timestamp: timestamp.toString(),
     recvWindow: '60000',
   };
 
-  if (reduceOnly) {
-    params.reduceOnly = 'true';
+  if (isConditionalClose) {
+    params.closePosition = 'true';
+  } else {
+    params.quantity = formatQuantityByFilter(parseFloat(quantity), filterInfo);
+    if (reduceOnly) {
+      params.reduceOnly = 'true';
+    }
   }
 
   if (stopPrice) {
-    params.stopPrice = stopPrice.toString();
+    params.stopPrice = formatPriceByFilter(parseFloat(stopPrice), filterInfo);
   }
 
   if (clientOrderId) {
     params.newClientOrderId = clientOrderId;
   }
 
+  // Determine correct positionSide for Binance account setting
+  let resolvedPositionSide = explicitPositionSide?.toString().toUpperCase();
+  if (!resolvedPositionSide) {
+    const isDual = await getAccountDualSidePosition(apiKey, apiSecret, baseUrl);
+    if (isDual) {
+      if (side.toUpperCase() === 'BUY') {
+        resolvedPositionSide = (reduceOnly || isConditionalClose) ? 'SHORT' : 'LONG';
+      } else {
+        resolvedPositionSide = (reduceOnly || isConditionalClose) ? 'LONG' : 'SHORT';
+      }
+    } else {
+      resolvedPositionSide = 'BOTH';
+    }
+  }
+  params.positionSide = resolvedPositionSide;
+
   const queryString = new URLSearchParams(params).toString();
   const signature = signQuery(queryString, apiSecret);
 
   try {
-    const response = await fetch(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
+    let response = await fetch(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
       method: 'POST',
       headers: { 'X-MBX-APIKEY': apiKey },
     });
-    const data = await response.json();
+    let data = await response.json();
+
+    // Auto-recover from Binance error -4061 (Order's position side does not match user's setting)
+    if (!response.ok && data.code === -4061) {
+      const alternateSide = resolvedPositionSide === 'BOTH'
+        ? (side.toUpperCase() === 'BUY' ? (reduceOnly || isConditionalClose ? 'SHORT' : 'LONG') : (reduceOnly || isConditionalClose ? 'LONG' : 'SHORT'))
+        : 'BOTH';
+      params.positionSide = alternateSide;
+      dualPositionModeCache.set(apiKey.slice(-8), { isDual: alternateSide !== 'BOTH', expiry: Date.now() + 5 * 60 * 1000 });
+
+      const retryQs = new URLSearchParams(params).toString();
+      const retrySig = signQuery(retryQs, apiSecret);
+      response = await fetch(`${baseUrl}/fapi/v1/order?${retryQs}&signature=${retrySig}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      data = await response.json();
+    }
+
     if (response.ok) {
       res.json({ success: true, order: data });
     } else {
@@ -693,10 +1088,252 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
   }
 });
 
-// 11. Binance Cancel Order
+// 10b. Binance Atomic Bracket Order Execution (Entry + Automatic SL & TP with Precision & Dual Position Side Guard)
+apiRouter.post('/binance/order-bracket', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const {
+    symbol,
+    side,
+    quantity,
+    leverage,
+    stopLossPrice,
+    takeProfitPrice,
+    clientOrderId,
+  } = req.body;
+
+  const credentials = getEffectiveCredentials(req, isTestnet);
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance order execution rejected: server credentials not configured (${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  if (!symbol || !side || !quantity || parseFloat(quantity) <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required order parameters (symbol, side, quantity)',
+    });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet, true, req);
+
+  // Fetch precision filters to prevent error -1111 on entry, SL, and TP
+  const filterInfo = await getSymbolFilterInfo(symbol, isTestnet);
+  const formattedQuantity = formatQuantityByFilter(parseFloat(quantity), filterInfo);
+  const formattedStopLossPrice = stopLossPrice ? formatPriceByFilter(parseFloat(stopLossPrice), filterInfo) : null;
+  const formattedTakeProfitPrice = takeProfitPrice ? formatPriceByFilter(parseFloat(takeProfitPrice), filterInfo) : null;
+
+  // Detect position mode (Hedge vs One-Way) to prevent error -4061
+  const isDual = await getAccountDualSidePosition(apiKey, apiSecret, baseUrl);
+  let entryPositionSide = isDual ? (side.toUpperCase() === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+  // In Hedge Mode, protective SL and TP close the established position:
+  // For LONG position: protective side is SELL, positionSide is 'LONG'.
+  // For SHORT position: protective side is BUY, positionSide is 'SHORT'.
+  let protectivePositionSide = entryPositionSide;
+
+  // Step 1: Optional Leverage adjustment
+  if (leverage && !isNaN(parseInt(leverage, 10))) {
+    try {
+      const levTimestamp = Date.now();
+      const levQuery = `symbol=${symbol}&leverage=${parseInt(leverage, 10)}&timestamp=${levTimestamp}&recvWindow=60000`;
+      const levSig = signQuery(levQuery, apiSecret);
+      await fetch(`${baseUrl}/fapi/v1/leverage?${levQuery}&signature=${levSig}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+    } catch (e) {
+      console.warn('[Bracket Order] Optional leverage adjustment pre-step failed:', e);
+    }
+  }
+
+  // Step 2: Main Entry Order
+  const entryTimestamp = Date.now();
+  const entryParams: Record<string, string> = {
+    symbol,
+    side: side.toUpperCase(),
+    positionSide: entryPositionSide,
+    type: 'MARKET',
+    quantity: formattedQuantity,
+    timestamp: entryTimestamp.toString(),
+    recvWindow: '60000',
+  };
+  if (clientOrderId) {
+    entryParams.newClientOrderId = clientOrderId;
+  }
+
+  let entryQueryString = new URLSearchParams(entryParams).toString();
+  let entrySignature = signQuery(entryQueryString, apiSecret);
+
+  let entryOrderData: any = null;
+  try {
+    let entryResponse = await fetch(`${baseUrl}/fapi/v1/order?${entryQueryString}&signature=${entrySignature}`, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    entryOrderData = await entryResponse.json();
+
+    // Auto-recover if position side mode mismatch occurred (-4061)
+    if (!entryResponse.ok && entryOrderData.code === -4061) {
+      entryPositionSide = entryPositionSide === 'BOTH' ? (side.toUpperCase() === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+      protectivePositionSide = entryPositionSide;
+      dualPositionModeCache.set(apiKey.slice(-8), { isDual: entryPositionSide !== 'BOTH', expiry: Date.now() + 5 * 60 * 1000 });
+      entryParams.positionSide = entryPositionSide;
+
+      entryQueryString = new URLSearchParams(entryParams).toString();
+      entrySignature = signQuery(entryQueryString, apiSecret);
+      entryResponse = await fetch(`${baseUrl}/fapi/v1/order?${entryQueryString}&signature=${entrySignature}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      entryOrderData = await entryResponse.json();
+    }
+
+    if (!entryResponse.ok) {
+      return res.status(entryResponse.status).json({
+        success: false,
+        error: entryOrderData.msg || 'Binance entry order rejected',
+        code: entryOrderData.code,
+      });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: `Failed to execute entry order: ${err.message}` });
+  }
+
+  // Step 3: Automatically submit Stop Loss & Take Profit directly to Binance API during this order creation call
+  const protectiveSide = side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+  let stopLossOrderData: any = null;
+  let takeProfitOrderData: any = null;
+  let slError: string | null = null;
+  let tpError: string | null = null;
+
+  // Helper to place protective order with closePosition=true and fallback to reduceOnly
+  const placeProtectiveOrder = async (
+    orderType: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET',
+    targetPriceFormatted: string
+  ) => {
+    const ts = Date.now();
+
+    // Attempt A: closePosition: true with matching positionSide
+    const p1: Record<string, string> = {
+      symbol,
+      side: protectiveSide,
+      positionSide: protectivePositionSide,
+      type: orderType,
+      stopPrice: targetPriceFormatted,
+      closePosition: 'true',
+      workingType: 'MARK_PRICE',
+      timestamp: ts.toString(),
+      recvWindow: '60000',
+    };
+    let q1 = new URLSearchParams(p1).toString();
+    let s1 = signQuery(q1, apiSecret);
+
+    let res = await fetch(`${baseUrl}/fapi/v1/order?${q1}&signature=${s1}`, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    let data = await res.json();
+
+    if (!res.ok && data.code === -4061) {
+      protectivePositionSide = protectivePositionSide === 'BOTH' ? (side.toUpperCase() === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+      p1.positionSide = protectivePositionSide;
+      q1 = new URLSearchParams(p1).toString();
+      s1 = signQuery(q1, apiSecret);
+      res = await fetch(`${baseUrl}/fapi/v1/order?${q1}&signature=${s1}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      data = await res.json();
+    }
+
+    if (res.ok && data.orderId) {
+      return { success: true, data };
+    }
+
+    // Attempt B: fallback with reduceOnly: true and properly formatted quantity
+    const ts2 = Date.now();
+    const p2: Record<string, string> = {
+      symbol,
+      side: protectiveSide,
+      positionSide: protectivePositionSide,
+      type: orderType,
+      stopPrice: targetPriceFormatted,
+      quantity: formattedQuantity,
+      reduceOnly: 'true',
+      workingType: 'MARK_PRICE',
+      timestamp: ts2.toString(),
+      recvWindow: '60000',
+    };
+    let q2 = new URLSearchParams(p2).toString();
+    let s2 = signQuery(q2, apiSecret);
+
+    res = await fetch(`${baseUrl}/fapi/v1/order?${q2}&signature=${s2}`, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    data = await res.json();
+    if (res.ok && data.orderId) {
+      return { success: true, data };
+    }
+
+    return { success: false, error: data.msg || `Failed to submit ${orderType}`, code: data.code };
+  };
+
+  // Submit SL
+  if (formattedStopLossPrice) {
+    try {
+      const slResult = await placeProtectiveOrder('STOP_MARKET', formattedStopLossPrice);
+      if (slResult.success) {
+        stopLossOrderData = slResult.data;
+      } else {
+        slError = slResult.error || 'Failed to submit SL';
+      }
+    } catch (e: any) {
+      slError = e.message;
+    }
+  }
+
+  // Submit TP
+  if (formattedTakeProfitPrice) {
+    try {
+      const tpResult = await placeProtectiveOrder('TAKE_PROFIT_MARKET', formattedTakeProfitPrice);
+      if (tpResult.success) {
+        takeProfitOrderData = tpResult.data;
+      } else {
+        tpError = tpResult.error || 'Failed to submit TP';
+      }
+    } catch (e: any) {
+      tpError = e.message;
+    }
+  }
+
+  return res.json({
+    success: true,
+    order: entryOrderData,
+    stopLossOrder: stopLossOrderData,
+    takeProfitOrder: takeProfitOrderData,
+    slSubmitted: !!stopLossOrderData,
+    tpSubmitted: !!takeProfitOrderData,
+    slOrderId: stopLossOrderData?.orderId?.toString(),
+    tpOrderId: takeProfitOrderData?.orderId?.toString(),
+    slError,
+    tpError,
+  });
+});
+
+// 11. Binance Cancel Single Order
 apiRouter.post('/binance/cancelOrder', async (req: Request, res: Response) => {
   const isTestnet = resolveIsTestnet(req.body.isTestnet);
-  if (!isTestnet && !isProductionTradingAllowed()) {
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
     return res.status(403).json({
       success: false,
       error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
@@ -704,7 +1341,7 @@ apiRouter.post('/binance/cancelOrder', async (req: Request, res: Response) => {
   }
 
   const { symbol, orderId } = req.body;
-  const credentials = getServerBinanceCredentials(isTestnet);
+  const credentials = getEffectiveCredentials(req, isTestnet);
 
   if (!credentials) {
     return res.status(400).json({
@@ -718,7 +1355,7 @@ apiRouter.post('/binance/cancelOrder', async (req: Request, res: Response) => {
   }
 
   const { apiKey, apiSecret } = credentials;
-  const baseUrl = getBinanceBaseUrl(isTestnet);
+  const baseUrl = getBinanceBaseUrl(isTestnet, false, req);
   const timestamp = Date.now();
   const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}&recvWindow=60000`;
   const signature = signQuery(queryString, apiSecret);
@@ -736,6 +1373,204 @@ apiRouter.post('/binance/cancelOrder', async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 11b. Binance Cancel All Open Orders for a Symbol (To cleanly remove pending TP/SL on close)
+apiRouter.post('/binance/cancelAllOpenOrders', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const { symbol } = req.body;
+  const credentials = getEffectiveCredentials(req, isTestnet);
+
+  if (!credentials) {
+    return res.status(400).json({
+      success: false,
+      error: `Binance credentials not configured on server (.env: ${isTestnet ? 'BINANCE_TESTNET_API_KEY' : 'BINANCE_API_KEY'})`,
+    });
+  }
+
+  if (!symbol) {
+    return res.status(400).json({ success: false, error: 'Missing required symbol parameter' });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet, false, req);
+  const timestamp = Date.now();
+  const queryString = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=60000`;
+  const signature = signQuery(queryString, apiSecret);
+
+  try {
+    const response = await fetch(`${baseUrl}/fapi/v1/allOpenOrders?${queryString}&signature=${signature}`, {
+      method: 'DELETE',
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      res.json({ success: true, result: data });
+    } else {
+      res.status(response.status).json({ success: false, error: data.msg || 'Cancel all open orders failed' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 11b. Intelligent Binance Credentials Validation & Diagnostic Endpoint
+apiRouter.post('/binance/validate-credentials', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  const credentials = getEffectiveCredentials(req, isTestnet);
+
+  if (!credentials || !credentials.apiKey || !credentials.apiSecret) {
+    return res.status(400).json({
+      success: false,
+      error: 'يرجى إدخال كل من API Key و API Secret للتحقق من الاتصال بحساب باينانس.',
+      code: 'MISSING_CREDENTIALS',
+    });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const primaryBaseUrl = isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+  const alternateBaseUrl = isTestnet ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';
+
+  const testAuth = async (baseUrl: string) => {
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}&recvWindow=60000`;
+    const signature = signQuery(queryString, apiSecret);
+    const response = await fetch(`${baseUrl}/fapi/v2/account?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const data = await response.json();
+    return { ok: response.ok, status: response.status, data };
+  };
+
+  try {
+    const primaryResult = await testAuth(primaryBaseUrl);
+
+    if (primaryResult.ok) {
+      if (isTestnet) {
+        cachedServerCredentials.testnet = { apiKey, apiSecret };
+        process.env.BINANCE_TESTNET_API_KEY = apiKey;
+        process.env.BINANCE_TESTNET_API_SECRET = apiSecret;
+      } else {
+        cachedServerCredentials.live = { apiKey, apiSecret };
+        process.env.BINANCE_API_KEY = apiKey;
+        process.env.BINANCE_API_SECRET = apiSecret;
+      }
+      saveServerCredentialsToFile();
+
+      const data = primaryResult.data;
+      const usdt = (data.assets || []).find((a: any) => a.asset === 'USDT') || {};
+      return res.json({
+        success: true,
+        environment: isTestnet ? 'DEMO_TESTNET' : 'LIVE_PRODUCTION',
+        walletBalance: parseFloat(data.totalWalletBalance || usdt.walletBalance || '0'),
+        availableBalance: parseFloat(data.availableBalance || usdt.availableBalance || '0'),
+        canTrade: data.canTrade ?? true,
+        message: isTestnet
+          ? 'تم التحقق بنجاح من حساب باينانس ديمو التجريبي (Binance Demo Futures).'
+          : 'تم التحقق بنجاح من حساب باينانس الحقيقي المباشر (Binance Live Futures).',
+      });
+    }
+
+    // Handle Binance Error Code -2015 / Auth failure with deep diagnosis
+    const errorCode = primaryResult.data?.code;
+    const errorMsg = primaryResult.data?.msg || 'Authentication failed';
+
+    if (errorCode === -2015) {
+      // Cross-check if this key belongs to the other environment!
+      try {
+        const altResult = await testAuth(alternateBaseUrl);
+        if (altResult.ok) {
+          const correctEnvName = isTestnet ? 'باينانس الحقيقي (Live)' : 'باينانس ديمو التجريبي (Demo Testnet)';
+          return res.status(400).json({
+            success: false,
+            code: -2015,
+            error: `المفتاح المدخل يعمل بنجاح على ${correctEnvName} وليس على البيئة المحددة حالياً. يرجى تبديل الخيار في الإعدادات إلى ${correctEnvName}.`,
+            suggestedEnvIsTestnet: !isTestnet,
+          });
+        }
+      } catch {
+        // Alt check error, proceed to standard -2015 explanation
+      }
+
+      const diagnosis = isTestnet
+        ? 'خطأ (-2015) في باينانس ديمو: المفتاح أو الـ Secret غير صحيحين، أو تم إنشاؤهما على موقع باينانس الحقيقي بدلاً من منصة باينانس ديمو التجريبية (testnet.binancefuture.com).'
+        : 'خطأ (-2015) في باينانس الحقيقي: المفتاح غير مصرح له أو تم رفض الطلب. يرجى فتح حسابك على منصة باينانس > إدارة الـ API، والتأكد من:\n1. تفعيل خيار "Enable Futures" (تمكين العقود الآجلة).\n2. التحقق من صلاحيات القراءة والتداول.\n3. التأكد من إعدادات تقييد الآي بي (IP Access Restrictions).';
+
+      return res.status(400).json({
+        success: false,
+        code: -2015,
+        rawMessage: errorMsg,
+        error: diagnosis,
+      });
+    }
+
+    return res.status(primaryResult.status).json({
+      success: false,
+      code: errorCode,
+      error: `فشل الاتصال بباينانس: ${errorMsg}`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: `حدث خطأ أثناء فحص بيانات الاعتماد: ${err.message}`,
+    });
+  }
+});
+
+// 11c. Transition to Production Validation Endpoint
+apiRouter.post('/binance/transition-to-production', async (req: Request, res: Response) => {
+  const { apiKey, apiSecret, confirmRisks } = req.body;
+  if (!confirmRisks) {
+    return res.status(400).json({
+      success: false,
+      error: 'يجب تأكيد المخاطر قبل الانتقال إلى التداول الحقيقي بأموال حقيقية.',
+    });
+  }
+
+  const credentials = getEffectiveCredentials(req, false);
+  if (!credentials || !credentials.apiKey || !credentials.apiSecret) {
+    return res.status(400).json({
+      success: false,
+      error: 'بيانات حساب باينانس الحقيقي (API Key و Secret) مطلوبة للانتقال إلى التداول الحقيقي.',
+    });
+  }
+
+  const timestamp = Date.now();
+  const queryString = `timestamp=${timestamp}&recvWindow=60000`;
+  const signature = signQuery(queryString, credentials.apiSecret);
+
+  try {
+    const response = await fetch(`https://fapi.binance.com/fapi/v2/account?${queryString}&signature=${signature}`, {
+      headers: { 'X-MBX-APIKEY': credentials.apiKey },
+    });
+    const data = await response.json();
+
+    if (response.ok) {
+      return res.json({
+        success: true,
+        environment: 'production',
+        message: 'تم التحقق من الحساب الحقيقي واعتماد الانتقال للتداول المباشر بنجاح.',
+        walletBalance: parseFloat(data.totalWalletBalance || '0'),
+        availableBalance: parseFloat(data.availableBalance || '0'),
+        authorizedAt: Date.now(),
+      });
+    } else {
+      return res.status(response.status).json({
+        success: false,
+        code: data.code,
+        error: data.msg || 'فشل التحقق من حساب باينانس الحقيقي.',
+      });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

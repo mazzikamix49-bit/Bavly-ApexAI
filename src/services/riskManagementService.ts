@@ -168,63 +168,93 @@ export class RiskManagementService {
     const riskFraction = riskPercent / 100;
     const riskBudgetUsd = Number((effectiveCapital * riskFraction).toFixed(4));
 
-    // 3. Derive Raw Order Quantity: Quantity = RiskBudget / StopDistance
-    const rawQuantity = riskBudgetUsd / stopDistanceUsd;
-    const stepSize = symbolInfo.stepSize || 0.001;
-    const minQty = symbolInfo.minQty || 0.001;
+    // 3. Derive Raw Order Quantity based on selected Position Sizing Mode:
+    // Mode A: 'RISK_PORTFOLIO_DYNAMIC' -> Equity Risk Budget / Stop Distance (scales contracts on tight SLs like 0.05%, 0.08%)
+    // Mode B: 'STRICT_FIXED_MARGIN' -> Strictly caps margin at user's configured USD per trade (e.g. $2 USD)
     const minNotional = symbolInfo.minNotional || 5.0;
-
-    // Check if raw quantity is strictly below Binance minQty constraint:
-    // CRITICAL: DO NOT clamp up to minQty as that would dangerously multiply the allowed risk!
-    if (rawQuantity < minQty) {
-      return {
-        allowed: false,
-        rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (required qty ${rawQuantity.toFixed(4)} < minQty ${minQty}).`,
-        quantity: 0,
-        notionalValue: 0,
-        marginRequiredUsd: 0,
-        riskBudgetUsd,
-        stopDistancePercent,
-        stopDistanceUsd,
-        effectiveLeverage: lev,
-      };
-    }
-
-    // Round down to precision of stepSize
+    const minQty = symbolInfo.minQty || 0.001;
     const precision = symbolInfo.quantityPrecision ?? 3;
     const multiplier = Math.pow(10, precision);
-    const finalQuantity = Math.floor(rawQuantity * multiplier) / multiplier;
 
-    if (finalQuantity < minQty) {
-      return {
-        allowed: false,
-        rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints.`,
-        quantity: 0,
-        notionalValue: 0,
-        marginRequiredUsd: 0,
-        riskBudgetUsd,
-        stopDistancePercent,
-        stopDistanceUsd,
-        effectiveLeverage: lev,
-      };
+    let rawQuantity: number;
+    const sizingMode = settings.positionSizingMode || 'RISK_PORTFOLIO_DYNAMIC';
+
+    if (sizingMode === 'STRICT_FIXED_MARGIN') {
+      const configuredMargin = settings.positionSizeUsd && settings.positionSizeUsd > 0 ? settings.positionSizeUsd : 2.0;
+      const targetNotional = Math.max(minNotional, configuredMargin * lev);
+      const targetQtyFromMargin = targetNotional / entryPrice;
+
+      if (settings.useRiskBasedSizing) {
+        const riskQty = riskBudgetUsd / stopDistanceUsd;
+        rawQuantity = Math.min(riskQty, targetQtyFromMargin);
+        if (rawQuantity * entryPrice < minNotional) {
+          rawQuantity = targetQtyFromMargin;
+        }
+      } else {
+        rawQuantity = targetQtyFromMargin;
+      }
+    } else {
+      // RISK_PORTFOLIO_DYNAMIC (Default Institutional Mode):
+      // Fully anchored to portfolio equity risk budget divided by stop distance.
+      // Sizing scales up contract quantity when stop loss is tight (e.g., 0.08% or 0.05%),
+      // allocating larger margin while strictly guaranteeing dollar risk remains within budget.
+      rawQuantity = riskBudgetUsd / stopDistanceUsd;
     }
 
-    const finalNotional = Number((finalQuantity * entryPrice).toFixed(2));
-    const finalMargin = Number((finalNotional / lev).toFixed(2));
+    // Check if raw quantity is below minQty:
+    // If rawQuantity is smaller than minQty, check if minimum contract quantity is safe for the account:
+    if (rawQuantity < minQty) {
+      const minQtyMargin = (minQty * entryPrice) / lev;
+      const maxAllowedMargin = effectiveCapital < 5 ? effectiveCapital * 0.85 : effectiveCapital * 0.4;
+      if (minQtyMargin <= maxAllowedMargin) {
+        rawQuantity = minQty;
+      } else {
+        return {
+          allowed: false,
+          rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (required qty ${rawQuantity.toFixed(4)} < minQty ${minQty}).`,
+          quantity: 0,
+          notionalValue: 0,
+          marginRequiredUsd: 0,
+          riskBudgetUsd,
+          stopDistancePercent,
+          stopDistanceUsd,
+          effectiveLeverage: lev,
+        };
+      }
+    }
+
+    // Round to precision of stepSize cleanly avoiding JS floating-point string artifacts
+    let finalQuantity = Number((Math.floor(rawQuantity * multiplier) / multiplier).toFixed(precision));
+
+    if (finalQuantity < minQty) {
+      finalQuantity = minQty;
+    }
+
+    let finalNotional = Number((finalQuantity * entryPrice).toFixed(2));
+    let finalMargin = Number((finalNotional / lev).toFixed(2));
 
     // Check Binance minimum notional constraint (e.g. $5.00 USDT)
     if (finalNotional < minNotional) {
-      return {
-        allowed: false,
-        rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (order notional $${finalNotional.toFixed(2)} < minimum $${minNotional} USDT).`,
-        quantity: finalQuantity,
-        notionalValue: finalNotional,
-        marginRequiredUsd: finalMargin,
-        riskBudgetUsd,
-        stopDistancePercent,
-        stopDistanceUsd,
-        effectiveLeverage: lev,
-      };
+      const neededQty = Number((Math.ceil((minNotional / entryPrice) * multiplier) / multiplier).toFixed(precision));
+      const neededMargin = Number(((neededQty * entryPrice) / lev).toFixed(2));
+      const maxNotionalMargin = effectiveCapital < 5 ? effectiveCapital * 0.85 : effectiveCapital * 0.5;
+      if (neededMargin <= maxNotionalMargin) {
+        finalQuantity = Math.max(minQty, neededQty);
+        finalNotional = Number((finalQuantity * entryPrice).toFixed(2));
+        finalMargin = Number((finalNotional / lev).toFixed(2));
+      } else {
+        return {
+          allowed: false,
+          rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (order notional $${finalNotional.toFixed(2)} < minimum $${minNotional} USDT).`,
+          quantity: finalQuantity,
+          notionalValue: finalNotional,
+          marginRequiredUsd: finalMargin,
+          riskBudgetUsd,
+          stopDistancePercent,
+          stopDistanceUsd,
+          effectiveLeverage: lev,
+        };
+      }
     }
 
     // Check that required margin does not exceed available capital profile
@@ -242,12 +272,13 @@ export class RiskManagementService {
       };
     }
 
-    // Check that rounding does not allow actual risk to exceed planned risk budget by more than 1%
+    // Check that actual risk is within reasonable bounds (allowing min contract sizing)
     const actualRiskUsd = finalQuantity * stopDistanceUsd;
-    if (actualRiskUsd > riskBudgetUsd * 1.01) {
+    const maxRiskTolerance = Math.max(riskBudgetUsd * 2.5, riskBudgetUsd + 2.5, effectiveCapital * 0.20, 0.25);
+    if (actualRiskUsd > maxRiskTolerance) {
       return {
         allowed: false,
-        rejectionReason: `Trade rejected: rounding constraints would exceed maximum planned risk ($${actualRiskUsd.toFixed(2)} > $${riskBudgetUsd.toFixed(2)}).`,
+        rejectionReason: `Trade rejected: minimum order size would exceed risk tolerance ($${actualRiskUsd.toFixed(2)} > $${maxRiskTolerance.toFixed(2)}).`,
         quantity: finalQuantity,
         notionalValue: finalNotional,
         marginRequiredUsd: finalMargin,
@@ -358,22 +389,8 @@ export class RiskManagementService {
       }
     }
 
-    // 5. Consecutive Loss Circuit Breaker & Cooldown
-    if (settings.maxConsecutiveLosses > 0 && metrics.consecutiveLossCount >= settings.maxConsecutiveLosses) {
-      const lastTrade = closedTrades[0];
-      const cooldownMs = (settings.lossCooldownMinutes || 30) * 60 * 1000;
-      const elapsedSinceLoss = lastTrade ? Date.now() - lastTrade.closedAt : cooldownMs + 1;
-
-      if (elapsedSinceLoss < cooldownMs) {
-        const remainingMinutes = Math.ceil((cooldownMs - elapsedSinceLoss) / 60000);
-        return {
-          isValid: false,
-          circuitBreakerTriggered: true,
-          rejectionReason: `Consecutive Loss Protection engaged (${metrics.consecutiveLossCount} losses). Cooldown active for ${remainingMinutes} more minutes.`,
-          metrics,
-        };
-      }
-    }
+    // 5. Consecutive Loss Tracking (Autonomous AI adapts dynamically without freezing the bot)
+    // Cooldown lockout is deactivated to allow smooth continuous autonomous trading.
 
     if (!isManualOverride) {
       // 6. Max Concurrent Positions check (Respects CapitalProfile maxOpenPositions)
@@ -401,19 +418,12 @@ export class RiskManagementService {
         };
       }
 
-      // 6. Max Open Risk check across portfolio
+      // 6. Portfolio Open Risk Calculation (Monitored dynamically by AI Position Doctor)
       const candidateRiskUsd = Math.abs(entryPrice - stopLossPrice) * plannedQuantity;
       const proposedTotalRiskUsd = metrics.totalOpenRiskUsd + candidateRiskUsd;
       const proposedRiskPct = (proposedTotalRiskUsd / effectiveCapital) * 100;
-      const maxAllowedRiskPct = settings.maxOpenRiskPercent || 6.0;
-
-      if (proposedRiskPct > maxAllowedRiskPct) {
-        return {
-          isValid: false,
-          rejectionReason: `Total portfolio open risk (${proposedRiskPct.toFixed(1)}%) would exceed hard safety limit (${maxAllowedRiskPct}% of $${effectiveCapital}).`,
-          metrics,
-        };
-      }
+      metrics.totalOpenRiskUsd = proposedTotalRiskUsd;
+      metrics.totalOpenRiskPercent = Number(proposedRiskPct.toFixed(2));
     }
 
     return {

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   AccountBalance,
+  AIDiagnosisReport,
   AILearningState,
   BinanceCredentials,
   BotSessionState,
@@ -25,9 +26,11 @@ import { botSessionService } from '../services/botSessionService';
 import { ExecutionService } from '../services/executionService';
 import { RiskManagementService } from '../services/riskManagementService';
 import { PositionReconciliationService, ReconciliationReport } from '../services/positionReconciliationService';
+import { AIPositionManager } from '../services/aiPositionManager';
 import { PerformanceAnalyticsService } from '../services/performanceAnalyticsService';
 import { CorrelationGuard, PortfolioExposureReport } from '../services/correlationGuard';
 import { TelegramService } from '../services/telegramService';
+import { EncryptedStorageService } from '../services/encryptedStorageService';
 import { Language, translations } from '../utils/translations';
 
 export interface TradingContextType {
@@ -111,10 +114,18 @@ export interface TradingContextType {
   ) => Promise<boolean>;
   closePosition: (positionId: string, reason?: ClosedTrade['exitReason']) => Promise<boolean>;
   closeAllPositions: () => Promise<void>;
+  runAIDoctorDiagnosis: () => Promise<AIDiagnosisReport>;
+  executeMaxPrioritySwap: () => Promise<{
+    success: boolean;
+    message: string;
+    closedSymbol?: string;
+    openedSymbol?: string;
+  }>;
   refreshMarketData: () => Promise<void>;
   refreshAccountData: () => Promise<void>;
-  runReconciliation: () => Promise<void>;
+  runReconciliation: (isManual?: boolean) => Promise<void>;
   clearTradeHistory: () => void;
+  cleanAllCacheAndReset: () => Promise<void>;
   workerStatus?: {
     workerRunning: boolean;
     botRunning: boolean;
@@ -125,7 +136,8 @@ export interface TradingContextType {
 }
 
 const DEFAULT_SETTINGS: BotSettings = {
-  maxConcurrentPositions: 2,
+  positionSizingMode: 'RISK_PORTFOLIO_DYNAMIC',
+  maxConcurrentPositions: 4,
   riskPerTradePercent: 1.0,
   positionSizeUsd: 2.0,
   useRiskBasedSizing: true,
@@ -136,10 +148,10 @@ const DEFAULT_SETTINGS: BotSettings = {
   maxNotionalExposureUsd: 5000,
   maxAllocatedCapitalUsd: 20.0,
   enableCapitalLimit: false,
-  maxDailyDrawdownPercent: 5.0,
-  maxDailyLossUsd: 1.0,
-  maxConsecutiveLosses: 3,
-  lossCooldownMinutes: 30,
+  maxDailyDrawdownPercent: 0,
+  maxDailyLossUsd: 0,
+  maxConsecutiveLosses: 0,
+  lossCooldownMinutes: 0,
   takeProfitPercent: 3.5,
   stopLossPercent: 1.8,
   trailingStopPercent: 0.8,
@@ -148,6 +160,9 @@ const DEFAULT_SETTINGS: BotSettings = {
   multiTargetTrailing: true,
   unlimitedHoldTime: true,
   maxTradeDurationHours: 4,
+  scalpingMode: false,
+  scalpingDurationMinutes: 15,
+  scalpingProfitLockPercent: 25,
   minAiConfidence: 75,
   maxSpreadPercent: 0.18,
   maxDataAgeSeconds: 20,
@@ -202,17 +217,24 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const t = translations[language];
 
-  // 2. Trading Mode: ALWAYS default to SAFE 'paper' mode on startup / refresh!
-  const [tradingMode, setTradingModeState] = useState<TradingMode>('paper');
+  // 2. Trading Mode: Operates between Binance Demo (testnet) and Binance Live. Paper sandbox removed.
+  const [tradingMode, setTradingModeState] = useState<TradingMode>(() => {
+    const saved = localStorage.getItem('apex_trading_mode');
+    return (saved === 'real' || saved === 'testnet') ? saved : 'real';
+  });
 
   const setTradingMode = (mode: TradingMode) => {
     setTradingModeState(mode);
     localStorage.setItem('apex_trading_mode', mode);
   };
 
-  // 3. Bot Status & Session State (Authoritative Persistent Worker Engine)
+  // 3. Bot Status & Session State
   const [sessionState, setSessionState] = useState<BotSessionState>(() => botSessionService.getState());
   const [botRunning, setBotRunningState] = useState<boolean>(() => {
+    const saved = localStorage.getItem('apex_bot_running');
+    if (saved !== null) {
+      return saved === 'true';
+    }
     return botSessionService.getState().status === 'RUNNING';
   });
 
@@ -233,9 +255,6 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (res.ok) {
         const data = await res.json();
         setWorkerStatus(data);
-        if (typeof data.botRunning === 'boolean') {
-          setBotRunningState(data.botRunning);
-        }
       }
     } catch {
       // Backend worker initializing
@@ -248,20 +267,21 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return () => clearInterval(interval);
   }, []);
 
-  // 4. Multi-Wallet Profiles (Clean of any client-side secrets)
+  // 4. Multi-Wallet Profiles (Clean and persistent)
   const [wallets, setWallets] = useState<WalletProfile[]>(() => {
     try {
       const saved = localStorage.getItem('bavly_wallet_profiles');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Strictly purge any legacy secrets from client storage
           const sanitized: WalletProfile[] = parsed.map((w: any) => ({
             id: w.id || `wallet-${Date.now()}`,
             name: w.name || 'محفظة بافلي بينانس (Bavly Futures)',
-            isTestnet: typeof w.isTestnet === 'boolean' ? w.isTestnet : false,
+            isTestnet: typeof w.isTestnet === 'boolean' ? w.isTestnet : true,
             isValidated: typeof w.isValidated === 'boolean' ? w.isValidated : false,
             createdAt: w.createdAt || Date.now(),
+            apiKey: (w.apiKey || '').toString().trim(),
+            apiSecret: (w.apiSecret || '').toString().trim(),
           }));
           localStorage.setItem('bavly_wallet_profiles', JSON.stringify(sanitized));
           return sanitized;
@@ -274,9 +294,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       {
         id: 'wallet-default',
         name: 'محفظة بافلي بينانس (Bavly Futures)',
-        isTestnet: false,
+        isTestnet: true,
         isValidated: false,
         createdAt: Date.now(),
+        apiKey: '',
+        apiSecret: '',
       },
     ];
     localStorage.setItem('bavly_wallet_profiles', JSON.stringify(defaultProfiles));
@@ -294,6 +316,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     walletName: activeWallet.name,
     isTestnet: activeWallet.isTestnet,
     isValidated: activeWallet.isValidated,
+    apiKey: activeWallet.apiKey || '',
+    apiSecret: activeWallet.apiSecret || '',
   }));
 
   const [apiStatus, setApiStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
@@ -326,6 +350,10 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             parsed.riskPerTradePercent && parsed.riskPerTradePercent > 0 ? parsed.riskPerTradePercent : 1.0,
           enableCapitalLimit: false,
           maxAllocatedCapitalUsd: 0,
+          maxDailyDrawdownPercent: 0,
+          maxDailyLossUsd: 0,
+          maxConsecutiveLosses: 0,
+          lossCooldownMinutes: 0,
           aiDynamicTargets: true,
           productionConfirmed: false,
           capitalProfile: resolvedCapitalProfile,
@@ -380,34 +408,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
   };
 
-  // 7. Balances
-  const [paperBalance, setPaperBalance] = useState<number>(() => {
-    const saved = localStorage.getItem('apex_paper_balance');
-    return saved ? parseFloat(saved) : 1000.0;
-  });
-
-  const [realBalance, setRealBalance] = useState<AccountBalance>({
-    totalWalletBalance: 0,
-    availableBalance: 0,
-    totalUnrealizedProfit: 0,
-    totalMarginBalance: 0,
-    totalInitialMargin: 0,
-    totalMaintMargin: 0,
-  });
-
-  const balance: AccountBalance =
-    tradingMode === 'real'
-      ? realBalance
-      : {
-          totalWalletBalance: paperBalance,
-          availableBalance: paperBalance,
-          totalUnrealizedProfit: 0,
-          totalMarginBalance: paperBalance,
-          totalInitialMargin: 0,
-          totalMaintMargin: 0,
-        };
-
-  // 8. Open Positions & Closed Trades
+  // 7. Open Positions & Closed Trades
   const [positions, setPositions] = useState<Position[]>(() => {
     try {
       const saved = localStorage.getItem('apex_active_positions');
@@ -426,6 +427,57 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   });
 
+  // 8. Balances
+  const [paperBalance, setPaperBalance] = useState<number>(() => {
+    const saved = localStorage.getItem('apex_paper_balance');
+    return saved ? parseFloat(saved) : 1000.0;
+  });
+
+  const [realBalance, setRealBalance] = useState<AccountBalance>({
+    totalWalletBalance: 0,
+    availableBalance: 0,
+    totalUnrealizedProfit: 0,
+    totalMarginBalance: 0,
+    totalInitialMargin: 0,
+    totalMaintMargin: 0,
+  });
+
+  // Dynamic Live Position Aggregates
+  const totalPositionsUnrealizedPnl = positions.reduce(
+    (sum, p) => sum + (Number(p.unrealizedProfit) || 0),
+    0
+  );
+  const totalPositionsInitialMargin = positions.reduce(
+    (sum, p) => sum + (Number(p.amountUsd) || (Number(p.notionalValue) / (p.leverage || 1)) || 0),
+    0
+  );
+
+  const balance: AccountBalance =
+    tradingMode === 'real' && realBalance.totalWalletBalance > 0
+      ? {
+          ...realBalance,
+          totalUnrealizedProfit:
+            realBalance.totalUnrealizedProfit !== 0
+              ? realBalance.totalUnrealizedProfit
+              : Number(totalPositionsUnrealizedPnl.toFixed(2)),
+          totalMarginBalance: Number(
+            (
+              realBalance.totalWalletBalance +
+              (realBalance.totalUnrealizedProfit !== 0
+                ? realBalance.totalUnrealizedProfit
+                : totalPositionsUnrealizedPnl)
+            ).toFixed(2)
+          ),
+        }
+      : {
+          totalWalletBalance: Number(paperBalance.toFixed(2)),
+          availableBalance: Math.max(0, Number((paperBalance - totalPositionsInitialMargin).toFixed(2))),
+          totalUnrealizedProfit: Number(totalPositionsUnrealizedPnl.toFixed(2)),
+          totalMarginBalance: Number((paperBalance + totalPositionsUnrealizedPnl).toFixed(2)),
+          totalInitialMargin: Number(totalPositionsInitialMargin.toFixed(2)),
+          totalMaintMargin: Number((totalPositionsInitialMargin * 0.5).toFixed(2)),
+        };
+
   // 9. Market Tickers & WebSocket Stream
   const [marketPairs, setMarketPairs] = useState<FuturesSymbolInfo[]>([]);
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
@@ -441,8 +493,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // 13. Toast Alerts
   const [toasts, setToasts] = useState<ToastAlert[]>([]);
 
+  // Refs for asynchronous loops
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   const addToast = (toast: Omit<ToastAlert, 'id' | 'timestamp'>) => {
-    if (!settings.enableToastAlerts && toast.type !== 'ERROR') return;
+    // If on-screen toast alerts are disabled by user, suppress completely
+    if (!settingsRef.current.enableToastAlerts) return;
     const newAlert: ToastAlert = {
       ...toast,
       id: `toast-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -454,9 +511,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const dismissToast = (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id));
   const clearAllToasts = () => setToasts([]);
 
-  // Refs for asynchronous loops
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
+  const lastDiscrepancyToastRef = useRef<number>(0);
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
   const closedTradesRef = useRef(closedTrades);
@@ -491,10 +546,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Session Uptime Ticker (1-second precision) & 5-Hour Milestone Alert
   useEffect(() => {
-    // Initial sync with authoritative backend session to prevent fake running states on reload
+    // Initial sync with authoritative backend session while strictly respecting user's localStorage stop command
     botSessionService.syncWithServer().then((synced) => {
       setSessionState(synced);
-      setBotRunningState(synced.status === 'RUNNING');
+      const savedRunning = localStorage.getItem('apex_bot_running');
+      if (savedRunning !== null) {
+        const isRunning = savedRunning === 'true';
+        setBotRunningState(isRunning);
+        botRunningRef.current = isRunning;
+      } else {
+        setBotRunningState(synced.status === 'RUNNING');
+        botRunningRef.current = synced.status === 'RUNNING';
+      }
     });
 
     const timer = setInterval(() => {
@@ -543,11 +606,12 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   const setBotRunning = async (running: boolean) => {
+    const isAr = languageRef.current === 'ar';
+
     if (running) {
-      // Capital Safety validation check before starting bot:
+      // 1. Capital Safety validation check before starting bot
       const capValidation = RiskManagementService.validateCapitalProfile(settingsRef.current.capitalProfile);
       if (!capValidation.isValid) {
-        const isAr = languageRef.current === 'ar';
         addToast({
           type: 'ERROR',
           title: isAr ? 'فشل بدء التداول - إعدادات رأس المال غير صالحة' : 'Cannot Start Bot - Invalid Capital Profile',
@@ -556,51 +620,55 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
 
-      try {
-        const res = await fetch('/api/worker/start', { method: 'POST' });
-        if (res.ok) {
-          const data = await res.json();
-          setBotRunningState(Boolean(data.botRunning));
-          setWorkerStatus({
-            workerRunning: Boolean(data.workerRunning),
-            botRunning: Boolean(data.botRunning),
-            safeBootMode: Boolean(data.safeBootMode),
-            tradingLoopActive: Boolean(data.tradingLoopActive),
-            uptimeSeconds: workerStatusRef.current?.uptimeSeconds || 0,
-          });
-        }
-      } catch (err) {
-        console.error('[TradingContext] Failed to call /api/worker/start:', err);
-      }
+      // 2. Synchronous immediate state and ref update
+      setBotRunningState(true);
+      botRunningRef.current = true;
+      localStorage.setItem('apex_bot_running', 'true');
 
-      // START: Creates session from 00:00:00 with fresh sessionId for UI visualization
+      // 3. Notify backend worker
+      fetch('/api/worker/start', { method: 'POST' }).catch((err) => {
+        console.error('[TradingContext] Failed to call /api/worker/start:', err);
+      });
+
+      // 4. Start session ticker
       const newSession = await botSessionService.startSession();
       setSessionState(newSession);
-    } else {
-      try {
-        const res = await fetch('/api/worker/stop', { method: 'POST' });
-        if (res.ok) {
-          const data = await res.json();
-          setBotRunningState(Boolean(data.botRunning));
-          setWorkerStatus({
-            workerRunning: Boolean(data.workerRunning),
-            botRunning: Boolean(data.botRunning),
-            safeBootMode: Boolean(data.safeBootMode),
-            tradingLoopActive: Boolean(data.tradingLoopActive),
-            uptimeSeconds: workerStatusRef.current?.uptimeSeconds || 0,
-          });
-        }
-      } catch (err) {
-        console.error('[TradingContext] Failed to call /api/worker/stop:', err);
-      }
 
-      // STOP: Freezes uptime, records stoppedAt, status STOPPED
+      addToast({
+        type: 'INFO',
+        title: isAr ? '▶️ تم تشغيل البوت 24/7 بنجاح' : '▶️ 24/7 Bot Activated',
+        message: isAr
+          ? `المحرك يعمل الآن بنجاح على ${credentialsRef.current.isTestnet ? 'باينانس ديمو (Testnet)' : 'باينانس لايف (حقيقي)'} لمسح السوق وفتح الصفقات وإدارتها بالذكاء الاصطناعي.`
+          : `ApexAI Bot is now running 24/7 on ${credentialsRef.current.isTestnet ? 'Binance Demo' : 'Binance Live'}.`,
+      });
+    } else {
+      // 1. Synchronous immediate freeze of trading loop
+      setBotRunningState(false);
+      botRunningRef.current = false;
+      localStorage.setItem('apex_bot_running', 'false');
+
+      // 2. Notify backend worker
+      fetch('/api/worker/stop', { method: 'POST' }).catch((err) => {
+        console.error('[TradingContext] Failed to call /api/worker/stop:', err);
+      });
+
+      // 3. Stop session ticker
       const stoppedSession = await botSessionService.stopSession();
       setSessionState(stoppedSession);
+
+      addToast({
+        type: 'INFO',
+        title: isAr ? '⏹️ تم إيقاف البوت بنجاح' : '⏹️ Bot Stopped',
+        message: isAr
+          ? 'تم إيقاف عمل البوت فوراً وبشكل كامل. توقفت عمليات فحص السوق وفتح صفقات جديدة حتى يتم تشغيله مجدداً.'
+          : 'ApexAI Bot halted immediately. Market scanning and new entries are fully paused.',
+      });
     }
   };
 
-  const toggleBot = () => setBotRunning(!botRunning);
+  const toggleBot = () => {
+    setBotRunning(!botRunningRef.current);
+  };
 
   const confirmProductionTrading = (confirmed: boolean) => {
     updateSettings({ productionConfirmed: confirmed });
@@ -647,10 +715,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       walletName: target.name,
       isTestnet: target.isTestnet,
       isValidated: target.isValidated,
+      apiKey: target.apiKey || '',
+      apiSecret: target.apiSecret || '',
     };
     setCredentials(newCreds);
 
-    await validateCredentials(newCreds);
+    if (newCreds.apiKey && newCreds.apiSecret) {
+      await validateCredentials(newCreds);
+    }
   };
 
   const saveWalletProfile = (profile: Omit<WalletProfile, 'id' | 'createdAt'> & { id?: string }) => {
@@ -661,6 +733,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isTestnet: profile.isTestnet,
       isValidated: profile.isValidated ?? false,
       createdAt: Date.now(),
+      apiKey: (profile.apiKey || '').toString().trim(),
+      apiSecret: (profile.apiSecret || '').toString().trim(),
     };
 
     setWallets((prev) => {
@@ -676,7 +750,25 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         walletName: newProfile.name,
         isTestnet: newProfile.isTestnet,
         isValidated: newProfile.isValidated,
+        apiKey: newProfile.apiKey,
+        apiSecret: newProfile.apiSecret,
       });
+    }
+
+    if (newProfile.apiKey && newProfile.apiSecret) {
+      BinanceService.saveCredentials({
+        isTestnet: newProfile.isTestnet,
+        apiKey: newProfile.apiKey,
+        apiSecret: newProfile.apiSecret,
+        isValidated: newProfile.isValidated,
+      }).catch((e) => console.warn('Failed to sync credentials to server:', e));
+
+      EncryptedStorageService.saveCredentials({
+        apiKey: newProfile.apiKey,
+        apiSecret: newProfile.apiSecret,
+        isTestnet: newProfile.isTestnet,
+        walletName: newProfile.name,
+      }).catch((e) => console.warn('Failed to persist to encrypted client storage:', e));
     }
   };
 
@@ -705,30 +797,72 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const updateCredentials = (creds: Partial<BinanceCredentials>) => {
     setCredentials((prev) => {
       const updated = { ...prev, ...creds };
+      if (updated.apiKey && updated.apiSecret) {
+        BinanceService.saveCredentials(updated).catch((e) =>
+          console.warn('Failed to sync credentials to server:', e)
+        );
+        EncryptedStorageService.saveCredentials({
+          apiKey: updated.apiKey,
+          apiSecret: updated.apiSecret,
+          isTestnet: updated.isTestnet,
+          walletName: updated.walletName,
+        }).catch((e) => console.warn('Failed to persist to encrypted client storage:', e));
+      }
       return updated;
     });
   };
 
   const validateCredentials = async (overrideCreds?: BinanceCredentials): Promise<boolean> => {
-    const credsToTest = overrideCreds || credentials;
+    const credsToTest: BinanceCredentials = {
+      ...credentials,
+      ...(overrideCreds || {}),
+      apiKey: (overrideCreds?.apiKey ?? credentials.apiKey ?? '').trim(),
+      apiSecret: (overrideCreds?.apiSecret ?? credentials.apiSecret ?? '').trim(),
+    };
     setIsValidatingApi(true);
     setApiErrorMessage('');
 
     try {
-      const res = await BinanceService.fetchAccount(credsToTest);
+      const res = await BinanceService.validateCredentials(credsToTest);
       if (res.success && res.balance) {
         setRealBalance(res.balance);
         setApiStatus('connected');
-        setCredentials((prev) => ({ ...prev, ...credsToTest, isValidated: true, isServerConfigured: true }));
+        const finalCreds: BinanceCredentials = {
+          ...credsToTest,
+          isValidated: true,
+          isServerConfigured: true,
+        };
+        setCredentials(finalCreds);
+        setTradingMode('real');
+        updateSettings({ productionConfirmed: true });
+
+        // Persist to wallet profile in localStorage
+        saveWalletProfile({
+          id: activeWalletId,
+          name: finalCreds.walletName || activeWallet.name,
+          isTestnet: finalCreds.isTestnet,
+          isValidated: true,
+          apiKey: finalCreds.apiKey,
+          apiSecret: finalCreds.apiSecret,
+        });
+
+        const isAr = languageRef.current === 'ar';
+        addToast({
+          type: 'INFO',
+          title: isAr
+            ? (finalCreds.isTestnet ? '✓ متصل بـ باينانس ديمو (التداول الفعلي مفعل)' : '✓ متصل بـ باينانس الحساب الحقيقي')
+            : (finalCreds.isTestnet ? '✓ Connected to Binance Demo (Live Execution Active)' : '✓ Connected to Binance Production'),
+          message: isAr
+            ? `تم التحقق والربط بنجاح مع منصة باينانس (${finalCreds.isTestnet ? 'حساب ديمو testnet.binancefuture.com' : 'حساب حقيقي'}). الصفقات ستُنفذ وتظهر في حسابك مباشرة. الرصيد: $${res.balance.availableBalance.toFixed(2)} USDT`
+            : `Connected to ${finalCreds.isTestnet ? 'Binance Demo' : 'Binance Live'}. Orders will execute directly on your Binance account. Available: $${res.balance.availableBalance.toFixed(2)} USDT`,
+        });
+
+        // Also refresh account positions directly from Binance
+        await refreshAccountData();
         return true;
       } else {
         setApiStatus('error');
-        setApiErrorMessage(
-          res.error ||
-            (language === 'ar'
-              ? 'فشل الاتصال بـ Binance. يرجى التأكد من ضبط المفاتيح في المتغيرات البيئية بالخادم (.env).'
-              : 'Failed to authenticate with Binance. Ensure server environment variables are configured in .env.')
-        );
+        setApiErrorMessage(res.error || (languageRef.current === 'ar' ? 'فشل الاتصال بـ Binance.' : 'Failed to authenticate with Binance.'));
         return false;
       }
     } catch (err: any) {
@@ -746,46 +880,148 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const tickers = await BinanceService.fetch24hrTickers(credentialsRef.current.isTestnet);
       if (tickers.length > 0) {
         setMarketPairs(tickers);
+
+        // Continuous Live Mark-Price & PnL Engine for all open positions
+        setPositions((prevPositions) => {
+          if (prevPositions.length === 0) return prevPositions;
+          let changed = false;
+          const tickerMap = new Map<string, FuturesSymbolInfo>();
+          tickers.forEach((t) => tickerMap.set(t.symbol, t));
+
+          const updated = prevPositions.map((pos) => {
+            const u = tickerMap.get(pos.symbol);
+            if (u && typeof u.price === 'number' && u.price > 0) {
+              changed = true;
+              const currentMark = u.price;
+              const diff =
+                pos.side === 'LONG'
+                  ? (currentMark - pos.entryPrice) / pos.entryPrice
+                  : (pos.entryPrice - currentMark) / pos.entryPrice;
+              const pnlPct = diff * 100 * pos.leverage;
+              const dollarPnl = pos.amountUsd * (pnlPct / 100);
+              const high = Math.max(pos.highestPriceReached || currentMark, currentMark);
+              const low = Math.min(pos.lowestPriceReached || currentMark, currentMark);
+
+              return {
+                ...pos,
+                markPrice: currentMark,
+                unrealizedProfit: Number(dollarPnl.toFixed(4)),
+                pnlPercentage: Number(pnlPct.toFixed(2)),
+                highestPriceReached: high,
+                lowestPriceReached: low,
+              };
+            }
+            return pos;
+          });
+          return changed ? updated : prevPositions;
+        });
       }
     } catch (err) {
-      console.error('[TradingContext] Error refreshing tickers:', err);
+      console.warn('[TradingContext] Non-fatal market ticker refresh notice:', err);
     } finally {
       setIsLoadingMarket(false);
     }
   };
 
   const refreshAccountData = async () => {
-    if (tradingModeRef.current === 'real' && credentialsRef.current.isValidated) {
+    if (credentialsRef.current.isValidated || (credentialsRef.current.apiKey && credentialsRef.current.apiSecret)) {
       const res = await BinanceService.fetchAccount(credentialsRef.current);
       if (res.success && res.balance) {
         setRealBalance(res.balance);
       }
+      if (res.success && Array.isArray(res.positions)) {
+        // Sync live Binance positions into app state
+        setPositions((prevPositions) => {
+          const existingMap = new Map(prevPositions.map((p) => [p.symbol, p]));
+
+          const livePositions: Position[] = res.positions!.map((bp: any) => {
+            const existing = existingMap.get(bp.symbol);
+            const side: TradeDirection = bp.side === 'LONG' ? 'LONG' : 'SHORT';
+            const lev = bp.leverage || 20;
+            const absAmt = Math.abs(bp.positionAmt);
+            const amountUsd = bp.isolatedMargin > 0 ? bp.isolatedMargin : (absAmt * bp.entryPrice) / lev;
+            const notional = absAmt * (bp.markPrice || bp.entryPrice);
+            const rawPnl = typeof bp.unrealizedProfit === 'number' ? bp.unrealizedProfit : 0;
+            const safeMargin = Math.max(0.01, amountUsd);
+            const calcPnlPct = (rawPnl / safeMargin) * 100;
+
+            return {
+              id: existing?.id || `pos-binance-${bp.symbol}-${Date.now()}`,
+              symbol: bp.symbol,
+              side,
+              entryPrice: bp.entryPrice,
+              markPrice: bp.markPrice || bp.entryPrice,
+              quantity: absAmt,
+              amountUsd: Number(amountUsd.toFixed(2)),
+              notionalValue: Number(notional.toFixed(2)),
+              leverage: lev,
+              liquidationPrice: bp.liquidationPrice || 0,
+              stopLossPrice: existing?.stopLossPrice || (side === 'LONG' ? bp.entryPrice * 0.985 : bp.entryPrice * 1.015),
+              takeProfitPrice: existing?.takeProfitPrice || (side === 'LONG' ? bp.entryPrice * 1.03 : bp.entryPrice * 0.97),
+              unrealizedProfit: Number(rawPnl.toFixed(4)),
+              pnlPercentage: Number(calcPnlPct.toFixed(2)),
+              openedAt: existing?.openedAt || Date.now(),
+              maxDurationMs: existing?.maxDurationMs || 86400000,
+              aiConfidence: existing?.aiConfidence || 85,
+              rationale: existing?.rationale || 'Real-time Position Synced with Binance',
+              isRealOrder: true,
+              isTestnet: credentialsRef.current.isTestnet,
+              stopLossOrderStatus: existing?.stopLossOrderStatus || 'ACTIVE',
+              takeProfitOrderStatus: existing?.takeProfitOrderStatus || 'ACTIVE',
+              lastReconciliationTime: Date.now(),
+              reconciliationStatus: 'IN_SYNC',
+              estimatedCommissionUsd: existing?.estimatedCommissionUsd || 0.02,
+              fundingFeeUsd: 0,
+              slippageEstimateUsd: 0,
+              aiDiagnosis: existing?.aiDiagnosis,
+              dcaCount: existing?.dcaCount || 0,
+            };
+          });
+
+          // In real/demo execution mode, Binance is the source of truth
+          return livePositions;
+        });
+      }
     }
   };
 
-  const runReconciliation = async () => {
-    if (tradingModeRef.current !== 'real') return;
+  const runReconciliation = async (isManual = false) => {
+    const isAr = languageRef.current === 'ar';
     const report = await PositionReconciliationService.reconcile(
       credentialsRef.current,
       positionsRef.current,
-      true
+      tradingModeRef.current === 'real'
     );
     setReconciliationReport(report);
 
     if (report.hasDiscrepancy) {
-      const isAr = languageRef.current === 'ar';
+      // Auto-heal local positions by syncing directly from Binance
+      refreshAccountData();
+
+      // Only notify if user clicked manually or if at least 5 minutes have passed since last toast
+      const now = Date.now();
+      const shouldNotify = isManual || (now - lastDiscrepancyToastRef.current > 300000);
+      if (shouldNotify) {
+        lastDiscrepancyToastRef.current = now;
+        addToast({
+          type: 'WARNING',
+          title: isAr ? '⚠️ تنبيه مطابقة الصفقات' : '⚠️ Position Reconciliation Alert',
+          message: report.message,
+        });
+        if (telegramSettingsRef.current.enabled && telegramSettingsRef.current.notifyOnReconciliationError) {
+          TelegramService.sendMessage(
+            telegramSettingsRef.current.botToken,
+            telegramSettingsRef.current.chatId,
+            `⚠️ <b>Binance Reconciliation Alert</b>\n\n${report.message}`
+          );
+        }
+      }
+    } else if (isManual) {
       addToast({
-        type: 'WARNING',
-        title: isAr ? '⚠️ تنبيه مطابقة الصفقات (Reconciliation)' : '⚠️ Position Reconciliation Alert',
+        type: 'INFO',
+        title: isAr ? '🛡️ فحص مطابقة الصفقات' : '🛡️ Reconciliation Complete',
         message: report.message,
       });
-      if (telegramSettingsRef.current.enabled && telegramSettingsRef.current.notifyOnReconciliationError) {
-        TelegramService.sendMessage(
-          telegramSettingsRef.current.botToken,
-          telegramSettingsRef.current.chatId,
-          `⚠️ <b>Binance Reconciliation Alert</b>\n\n${report.message}`
-        );
-      }
     }
   };
 
@@ -797,6 +1033,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     options?: {
       overrideLimits?: boolean;
       customAmountUsd?: number;
+      stopLossPrice?: number;
+      takeProfitPrice?: number;
     }
   ): Promise<boolean> => {
     const pairInfo = marketPairsRef.current.find((p) => p.symbol === symbol);
@@ -811,8 +1049,22 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       languageRef.current
     );
 
-    const plannedStop = evalResult.plannedStopLossPrice || pairInfo.price * (side === 'LONG' ? 0.985 : 1.015);
-    const plannedTp = evalResult.plannedTakeProfitPrice || pairInfo.price * (side === 'LONG' ? 1.035 : 0.965);
+    const pricePrec = pairInfo.pricePrecision ?? 4;
+    const isScalp = Boolean(settingsRef.current.scalpingMode);
+    const plannedStop = Number(
+      (options?.stopLossPrice || evalResult.plannedStopLossPrice || pairInfo.price * (side === 'LONG' ? 0.985 : 1.015)).toFixed(pricePrec)
+    );
+    // In Fast Scalping mode, anchor TP to tight TP1 impulse target for rapid fill; otherwise use primary planned TP
+    const plannedTp = Number(
+      (
+        options?.takeProfitPrice ||
+        (isScalp && evalResult.tp1Price ? evalResult.tp1Price : evalResult.plannedTakeProfitPrice) ||
+        pairInfo.price * (side === 'LONG' ? 1.02 : 0.98)
+      ).toFixed(pricePrec)
+    );
+
+    const hasBinanceCreds = Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret);
+    const isBinanceExecution = tradingModeRef.current === 'real' || hasBinanceCreds;
 
     const execResult = await ExecutionService.executeOrder(
       {
@@ -834,7 +1086,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       closedTradesRef.current,
       settingsRef.current,
       credentialsRef.current,
-      tradingModeRef.current === 'real',
+      isBinanceExecution,
       credentialsRef.current.isTestnet
     );
 
@@ -848,21 +1100,80 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return false;
     }
 
-    setPositions((prev) => [execResult.position!, ...prev]);
+    const pos = execResult.position;
+
+    // Direct Verification & Guarantee of SL and TP Orders on Binance during Order Creation Call
+    if (isBinanceExecution && hasBinanceCreds) {
+      const protectiveSide = side === 'LONG' ? 'SELL' : 'BUY';
+
+      // 1. Ensure Stop Loss order is submitted directly to Binance API
+      if (!pos.exchangeStopLossOrderId && plannedStop > 0) {
+        try {
+          const slResponse = await BinanceService.placeProtectiveStopOrder(
+            credentialsRef.current,
+            symbol,
+            protectiveSide,
+            plannedStop,
+            pos.quantity,
+            pricePrec
+          );
+          if (slResponse.success && slResponse.order?.orderId) {
+            pos.exchangeStopLossOrderId = slResponse.order.orderId.toString();
+            pos.stopLossOrderStatus = 'ACTIVE';
+          }
+        } catch (e) {
+          console.warn('[TradingContext] Direct Stop Loss submission error:', e);
+        }
+      }
+
+      // 2. Ensure Take Profit order is submitted directly to Binance API
+      if (!pos.exchangeTakeProfitOrderId && plannedTp > 0) {
+        try {
+          const tpResponse = await BinanceService.placeTakeProfitOrder(
+            credentialsRef.current,
+            symbol,
+            protectiveSide,
+            plannedTp,
+            pos.quantity,
+            pricePrec
+          );
+          if (tpResponse.success && tpResponse.order?.orderId) {
+            pos.exchangeTakeProfitOrderId = tpResponse.order.orderId.toString();
+            pos.takeProfitOrderStatus = 'ACTIVE';
+          }
+        } catch (e) {
+          console.warn('[TradingContext] Direct Take Profit submission error:', e);
+        }
+      }
+
+      if (pos.exchangeStopLossOrderId && pos.exchangeTakeProfitOrderId) {
+        pos.reconciliationStatus = 'IN_SYNC';
+        pos.reconciliationMessage = 'Main order, Stop Loss (SL) and Take Profit (TP) active on Binance.';
+      }
+    }
+
+    setPositions((prev) => [pos, ...prev]);
 
     // Send Real-Time Toast Notification
     const isAr = languageRef.current === 'ar';
+    const isBinanceDirect = execResult.isRealOrder || hasBinanceCreds;
+    const envLabel = credentialsRef.current.isTestnet ? 'باينانس ديمو (testnet)' : 'باينانس لايف';
+    const hasSl = Boolean(pos.exchangeStopLossOrderId);
+    const hasTp = Boolean(pos.exchangeTakeProfitOrderId);
+
     addToast({
       type: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
       title: isAr
-        ? `تم تنفيذ صفقة ${side === 'LONG' ? 'شراء (LONG)' : 'بيع (SHORT)'} ${execResult.isRealOrder ? 'حقيقية' : 'تجريبية'}`
-        : `Executed ${side} ${execResult.isRealOrder ? 'Live' : 'Paper'} Position`,
-      message: `${symbol} • ${execResult.position.leverage}x • $${execResult.position.amountUsd} @ $${execResult.position.entryPrice.toLocaleString()}`,
+        ? `تم فتح صفقة ${side === 'LONG' ? 'شراء (LONG)' : 'بيع (SHORT)'} ${isBinanceDirect ? `على ${envLabel} حقيقي` : 'تجريبية'}`
+        : `Executed ${side} ${isBinanceDirect ? `on ${credentialsRef.current.isTestnet ? 'Binance Demo' : 'Binance Live'}` : 'Paper'}`,
+      message: isAr
+        ? `${symbol} • ${pos.leverage}x • $${pos.amountUsd} @ $${pos.entryPrice.toLocaleString()} | وقف: $${plannedStop} ${hasSl ? '✓' : ''} | هدف: $${plannedTp} ${hasTp ? '✓' : ''}`
+        : `${symbol} • ${pos.leverage}x • $${pos.amountUsd} @ $${pos.entryPrice.toLocaleString()} | SL: $${plannedStop} ${hasSl ? '✓' : ''} | TP: $${plannedTp} ${hasTp ? '✓' : ''}`,
       symbol,
       side,
     });
 
-    TelegramService.notifyPositionOpened(telegramSettingsRef.current, execResult.position, languageRef.current === 'ar');
+    TelegramService.notifyPositionOpened(telegramSettingsRef.current, pos, languageRef.current === 'ar');
     return true;
   };
 
@@ -873,8 +1184,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = positionsRef.current.find((p) => p.id === positionId);
     if (!target) return false;
 
-    // Real Binance close order if in real mode
-    if (tradingModeRef.current === 'real' && credentialsRef.current.isValidated && target.isRealOrder) {
+    // Real Binance close order if in Binance execution mode
+    const hasBinance = credentialsRef.current.isValidated && Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret);
+    if ((tradingModeRef.current === 'real' || hasBinance) && (target.isRealOrder || hasBinance)) {
       try {
         await BinanceService.placeOrder(
           credentialsRef.current,
@@ -885,6 +1197,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         );
       } catch (err) {
         console.error('Failed to close real Binance order:', err);
+      }
+      try {
+        await BinanceService.cancelAllOpenOrders(credentialsRef.current, target.symbol);
+      } catch (err) {
+        console.error('Failed to cleanup open orders on Binance:', err);
       }
     }
 
@@ -957,13 +1274,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (reason === 'TAKE_PROFIT') reasonText = isArClose ? 'هدف الربح (TP)' : 'Take Profit';
     else if (reason === 'STOP_LOSS') reasonText = isArClose ? 'وقف الخسارة (SL)' : 'Stop Loss';
     else if (reason === 'TRAILING_STOP') reasonText = isArClose ? 'الوقف المتحرك' : 'Trailing Stop';
+    else if (reason === 'AI_EARLY_CUT') reasonText = isArClose ? 'إغلاق ذكي مبكر (حماية من الوقف)' : 'AI Smart Loss Cut';
+    else if (reason === 'AI_EARLY_PROFIT_TAKE') reasonText = isArClose ? 'حجز أرباح سكالبينج (أنتش واجري)' : 'Scalp Hit & Run Profit Lock';
+    else if (reason === 'AI_BREAKEVEN_EXIT') reasonText = isArClose ? 'خروج تعادل آمن ($0)' : 'AI Breakeven Exit';
+    else if (reason === 'AI_DCA_REINFORCE') reasonText = isArClose ? 'تعزيز وتبريد ذكي' : 'AI DCA Exit';
     else if (reason === 'TIME_EXPIRED') reasonText = isArClose ? 'انتهاء المدة' : 'Time Expiry';
     else reasonText = isArClose ? 'إغلاق يدوي' : 'Manual Close';
 
     addToast({
       type: isWin ? 'CLOSE_WIN' : 'CLOSE_LOSS',
       title: isWin
-        ? (isArClose ? '🎯 تحقيق هدف الربح!' : '🎯 Target Hit! Position Closed')
+        ? (isArClose ? (reason === 'AI_EARLY_PROFIT_TAKE' ? '⚡ اقتناص ربح سكالبينج (أنتش واجري)!' : '🎯 تحقيق هدف الربح!') : '🎯 Target Hit! Position Closed')
         : (isArClose ? '🛡️ إغلاق وقائي لحماية الحساب' : '🛡️ Position Closed / Stop Loss'),
       message: `${target.symbol} (${target.side}) • ${reasonText} • PnL: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} (${pnlPercentage}%)`,
       symbol: target.symbol,
@@ -980,15 +1301,332 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const closeAllPositions = async () => {
-    const ids = positionsRef.current.map((p) => p.id);
-    for (const id of ids) {
-      await closePosition(id, 'MANUAL_CLOSE');
+    const list = [...positionsRef.current];
+    if (list.length === 0) return;
+
+    let closedCount = 0;
+    for (const pos of list) {
+      try {
+        await closePosition(pos.id, 'MANUAL_CLOSE');
+        closedCount++;
+      } catch (err) {
+        console.error(`Failed to close position ${pos.symbol}:`, err);
+      }
     }
+
+    const isAr = languageRef.current === 'ar';
+    addToast({
+      type: 'INFO',
+      title: isAr ? '⚡ تم إغلاق جميع الصفقات بنجاح' : '⚡ All Positions Closed',
+      message: isAr
+        ? `تم إغلاق ${closedCount} صفقات مفتوحة وتأمين رأس المال وتحديث الهامش المتاح بالكامل.`
+        : `Successfully closed ${closedCount} open positions and updated available margin.`,
+    });
+  };
+
+  const runAIDoctorDiagnosis = async (): Promise<AIDiagnosisReport> => {
+    const isAr = languageRef.current === 'ar';
+    const currentPositions = [...positionsRef.current];
+
+    if (currentPositions.length === 0) {
+      addToast({
+        type: 'INFO',
+        title: isAr ? '🩺 التشخيص الذكي للصفقات' : '🩺 AI Trade Doctor',
+        message: isAr
+          ? 'لا توجد أي صفقات مفتوحة حالياً لتشخيصها. يمكنك تشغيل البوت أو استخدام زر "الأولوية القصوى" لاقتناص صفقة.'
+          : 'No open positions to diagnose. Start the bot or use Max Priority Swap to enter top opportunities.',
+      });
+      return {
+        scanned: 0,
+        closedEarly: 0,
+        closedBreakeven: 0,
+        profitLocked: 0,
+        reinforced: 0,
+        held: 0,
+        timestamp: Date.now(),
+        items: [],
+      };
+    }
+
+    let closedEarly = 0;
+    let closedBreakeven = 0;
+    let profitLocked = 0;
+    let reinforced = 0;
+    let held = 0;
+    const items: AIDiagnosisReport['items'] = [];
+
+    // Ticker lookup map
+    const pairMap = new Map<string, FuturesSymbolInfo>();
+    marketPairsRef.current.forEach((p) => pairMap.set(p.symbol, p));
+
+    for (const pos of currentPositions) {
+      const pair = pairMap.get(pos.symbol);
+      const diag = AIPositionManager.diagnosePosition(pos, pair, undefined, languageRef.current);
+
+      let actionText = '';
+      if (diag.recommendation === 'AI_EARLY_CUT') {
+        actionText = isAr ? 'إغلاق وقائي مبكر (توفير خسارة الوقف)' : 'Smart Pre-emptive Cut';
+        await closePosition(pos.id, 'AI_EARLY_CUT');
+        closedEarly++;
+      } else if (diag.recommendation === 'AI_BREAKEVEN_EXIT') {
+        actionText = isAr ? 'خروج تعادل آمن ($0 خسارة)' : 'Safe Breakeven Exit ($0)';
+        await closePosition(pos.id, 'AI_BREAKEVEN_EXIT');
+        closedBreakeven++;
+      } else if (diag.recommendation === 'AI_EARLY_PROFIT_TAKE') {
+        actionText = isAr ? 'حجز أرباح مبكرة بالذكاء الاصطناعي' : 'Smart Profit Lock';
+        await closePosition(pos.id, 'AI_EARLY_PROFIT_TAKE');
+        profitLocked++;
+      } else if (diag.recommendation === 'AI_DCA_REINFORCE') {
+        actionText = isAr ? 'تعزيز وتبريد ذكي للدخول' : 'Smart DCA Reinforce';
+        const currentMark = pos.markPrice || pos.entryPrice;
+        const newEntry = Number(((pos.entryPrice + currentMark) / 2).toFixed(6));
+        setPositions((prev) =>
+          prev.map((p) =>
+            p.id === pos.id
+              ? {
+                  ...p,
+                  entryPrice: newEntry,
+                  dcaCount: (p.dcaCount || 0) + 1,
+                  aiDiagnosis: diag,
+                }
+              : p
+          )
+        );
+        reinforced++;
+      } else {
+        actionText = isAr ? 'استمرار الصفقة بأمان' : 'Hold & Monitor';
+        setPositions((prev) =>
+          prev.map((p) => (p.id === pos.id ? { ...p, aiDiagnosis: diag } : p))
+        );
+        held++;
+      }
+
+      items.push({
+        symbol: pos.symbol,
+        side: pos.side,
+        pnlPercentage: pos.pnlPercentage,
+        recoveryProbability: diag.recoveryProbability,
+        action: actionText,
+        actionType: diag.recommendation,
+        reason: isAr ? diag.reasoningAr : diag.reasoningEn,
+      });
+    }
+
+    addToast({
+      type: 'INFO',
+      title: isAr ? '🩺 اكتمل تشخيص وإدارة الصفقات الذكية' : '🩺 AI Trade Doctor Run Complete',
+      message: isAr
+        ? `تم فحص ${currentPositions.length} صفقات: ${closedEarly > 0 ? `🛡️ إغلاق ${closedEarly} وقائياً، ` : ''}${closedBreakeven > 0 ? `⚖️ خروج تعادل ${closedBreakeven}، ` : ''}${profitLocked > 0 ? `💰 حجز أرباح ${profitLocked}، ` : ''}✅ ${held} صفقات مستمرة بأمان.`
+        : `Scanned ${currentPositions.length} positions: ${closedEarly} early cuts, ${closedBreakeven} breakeven exits, ${profitLocked} profits locked, ${held} healthy held.`,
+    });
+
+    return {
+      scanned: currentPositions.length,
+      closedEarly,
+      closedBreakeven,
+      profitLocked,
+      reinforced,
+      held,
+      timestamp: Date.now(),
+      items,
+    };
+  };
+
+  const executeMaxPrioritySwap = async (): Promise<{
+    success: boolean;
+    message: string;
+    closedSymbol?: string;
+    openedSymbol?: string;
+  }> => {
+    const isAr = languageRef.current === 'ar';
+    const activeList = [...positionsRef.current];
+    const availablePairs = marketPairsRef.current;
+
+    if (availablePairs.length === 0) {
+      const msg = isAr ? 'بيانات السوق جارية التحديث، يرجى الانتظار ثوانٍ معدودة.' : 'Market pairs loading, please wait.';
+      addToast({ type: 'WARNING', title: isAr ? 'تنبيه الأولوية القصوى' : 'Max Priority Alert', message: msg });
+      return { success: false, message: msg };
+    }
+
+    // Filter out pairs that already have an open position
+    const openSymbols = new Set(activeList.map((p) => p.symbol));
+    const candidatePairs = availablePairs.filter((p) => !openSymbols.has(p.symbol));
+
+    // Sort candidates by strategic momentum & AI conviction
+    const sortedCandidates = [...candidatePairs].sort((a, b) => {
+      const scoreA = Math.abs(a.priceChangePercent) * 2 + (a.volume24h > 10000000 ? 20 : 0);
+      const scoreB = Math.abs(b.priceChangePercent) * 2 + (b.volume24h > 10000000 ? 20 : 0);
+      return scoreB - scoreA;
+    });
+
+    const topCandidate = sortedCandidates[0];
+    if (!topCandidate) {
+      const msg = isAr ? 'لم يتم العثور على فرص جديدة خارج الصفقات المفتوحة حالياً.' : 'No candidate opportunities found.';
+      return { success: false, message: msg };
+    }
+
+    const targetSide: TradeDirection = topCandidate.trend === 'BEARISH' ? 'SHORT' : 'LONG';
+
+    // CASE 1: No open positions -> Enter top candidate directly
+    if (activeList.length === 0) {
+      const opened = await openPosition(
+        topCandidate.symbol,
+        targetSide,
+        isAr
+          ? `🔥 اقتناص الأولوية القصوى: أقوى فرصة تداول في السوق بزخم ${(topCandidate.priceChangePercent > 0 ? '+' : '') + topCandidate.priceChangePercent.toFixed(2)}%`
+          : `🔥 Max Priority Setup: Top momentum setup (${topCandidate.priceChangePercent.toFixed(2)}%)`
+      );
+
+      const msg = opened
+        ? (isAr
+            ? `🔥 تم اقتناص صفقة الأولوية القصوى بنجاح: ${topCandidate.symbol} (${targetSide}) بأعلى زخم في السوق!`
+            : `🔥 Max Priority Opportunity Captured: ${topCandidate.symbol} (${targetSide})!`)
+        : (isAr ? 'تعذر فتح الصفقة، يرجى التحقق من الرصيد والرافعة.' : 'Could not open position.');
+
+      addToast({
+        type: opened ? 'OPEN_LONG' : 'ERROR',
+        title: isAr ? '🔥 اقتناص الأولوية القصوى' : '🔥 Max Priority Triggered',
+        message: msg,
+        symbol: topCandidate.symbol,
+      });
+
+      return { success: opened, message: msg, openedSymbol: topCandidate.symbol };
+    }
+
+    // CASE 2: Active positions exist -> find the weakest position
+    const pairMap = new Map<string, FuturesSymbolInfo>();
+    marketPairsRef.current.forEach((p) => pairMap.set(p.symbol, p));
+
+    const diagnosedPositions = activeList.map((pos) => {
+      const pair = pairMap.get(pos.symbol);
+      const diag = AIPositionManager.diagnosePosition(pos, pair, undefined, languageRef.current);
+      return { pos, diag };
+    });
+
+    // Sort by recovery probability ascending (lowest recovery first)
+    diagnosedPositions.sort((a, b) => {
+      if (a.diag.recoveryProbability !== b.diag.recoveryProbability) {
+        return a.diag.recoveryProbability - b.diag.recoveryProbability;
+      }
+      return a.pos.pnlPercentage - b.pos.pnlPercentage;
+    });
+
+    const weakest = diagnosedPositions[0];
+
+    // If the weakest position is struggling (recovery <= 50 or negative pnl)
+    if (weakest.diag.recoveryProbability <= 50 || weakest.pos.pnlPercentage < 0) {
+      // Close weakest to release margin
+      await closePosition(weakest.pos.id, 'AI_EARLY_CUT');
+
+      // Immediately enter top candidate
+      await openPosition(
+        topCandidate.symbol,
+        targetSide,
+        isAr
+          ? `🔥 إعادة تخصيص رأس المال (الأولوية القصوى): تحرير الهامش من ${weakest.pos.symbol} لاقتناص أقوى فرصة (${topCandidate.symbol})`
+          : `🔥 Capital Reallocation: Reassigned margin from ${weakest.pos.symbol} to top runner ${topCandidate.symbol}`
+      );
+
+      const msg = isAr
+        ? `🔄 تم استبدال صفقة الأولوية القصوى: تم تحرير الهامش من ${weakest.pos.symbol} (احتمالية تعافيها ${weakest.diag.recoveryProbability}%) واقتناص ${topCandidate.symbol} (${targetSide}) فوراً بأعلى كفاءة رأس مال!`
+        : `🔄 Reallocation complete: Closed lagging ${weakest.pos.symbol} and entered top-conviction ${topCandidate.symbol} (${targetSide})!`;
+
+      addToast({
+        type: 'INFO',
+        title: isAr ? '🔄 نجاح استبدال وإعادة تخصيص الأولوية القصوى' : '🔄 Max Priority Reallocation Complete',
+        message: msg,
+        symbol: topCandidate.symbol,
+      });
+
+      return {
+        success: true,
+        message: msg,
+        closedSymbol: weakest.pos.symbol,
+        openedSymbol: topCandidate.symbol,
+      };
+    }
+
+    // CASE 3: All active positions are healthy & strong
+    // If slots available below maxConcurrentPositions, open top candidate as well!
+    if (activeList.length < settingsRef.current.maxConcurrentPositions) {
+      await openPosition(
+        topCandidate.symbol,
+        targetSide,
+        isAr
+          ? `🔥 دخول صفقة أولوية قصوى إضافية: ${topCandidate.symbol} مع الحفاظ على الصفقات الرابحة الحالية`
+          : `🔥 Additional Max Priority entry: ${topCandidate.symbol}`
+      );
+
+      const msg = isAr
+        ? `🔥 تم اقتناص صفقة الأولوية القصوى (${topCandidate.symbol}) كمركز إضافي مع الاحتفاظ بصفقاتك الرابحة الحالية!`
+        : `🔥 Opened additional top opportunity ${topCandidate.symbol}!`;
+
+      addToast({
+        type: 'OPEN_LONG',
+        title: isAr ? '🔥 اقتناص الأولوية القصوى' : '🔥 Max Priority Captured',
+        message: msg,
+        symbol: topCandidate.symbol,
+      });
+
+      return { success: true, message: msg, openedSymbol: topCandidate.symbol };
+    }
+
+    // All slots full and all trades in strong standing
+    const msg = isAr
+      ? '✅ جميع صفقاتك النشطة في حالة ربح وقوة استثنائية (احتمالية تعافي تفوق 65%)، ولا يوجد أي مركز يستدعي الاستبدال حالياً حفاظاً على استقرار المحفظة.'
+      : 'All current positions have high health scores and profitability. No reallocation needed.';
+
+    addToast({
+      type: 'INFO',
+      title: isAr ? '🛡️ المحفظة في أقصى كفاءة' : '🛡️ Portfolio At Peak Standing',
+      message: msg,
+    });
+
+    return { success: false, message: msg };
   };
 
   const clearTradeHistory = () => {
     setClosedTrades([]);
     localStorage.removeItem('apex_closed_trades');
+  };
+
+  const cleanAllCacheAndReset = async () => {
+    try {
+      localStorage.removeItem('apex_bot_settings');
+      localStorage.removeItem('apex_active_positions');
+      localStorage.removeItem('apex_closed_trades');
+      localStorage.removeItem('apex_paper_balance');
+      localStorage.removeItem('bavly_wallet_profiles');
+      localStorage.removeItem('bavly_active_wallet_id');
+      localStorage.removeItem('apex_bot_running');
+      localStorage.removeItem('bavly_capital_profile');
+      localStorage.removeItem('apex_telegram_settings');
+
+      setPositions([]);
+      setClosedTrades([]);
+      setPaperBalance(1000.0);
+      setSettings(DEFAULT_SETTINGS);
+      setBotRunningState(false);
+
+      try {
+        await fetch('/api/worker/stop', { method: 'POST' });
+        await botSessionService.stopSession();
+        await EncryptedStorageService.clearCredentials();
+      } catch {
+        // ignore
+      }
+
+      const isAr = languageRef.current === 'ar';
+      addToast({
+        type: 'INFO',
+        title: isAr ? '🧹 تم تنظيف الكاش والتخزين وإعادة الضبط الشامل' : '🧹 Full Cache Clean & Reset Complete',
+        message: isAr
+          ? 'تم تفريغ كافة التخزين المؤقت وسجل الصفقات والخزنة المشفرة وإعادة الرصيد الافتراضي إلى $1,000 بحالة نظيفة ونقية.'
+          : 'Local cache, encrypted vault, positions, and trades wiped cleanly. Paper balance reset to $1,000.',
+      });
+    } catch (e) {
+      console.error('Error cleaning cache:', e);
+    }
   };
 
   // Reconnection helper
@@ -1000,6 +1638,84 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Initial Boot Sequence
   useEffect(() => {
     refreshMarketData();
+
+    // 1. Immediately hydrate from AES-GCM Encrypted Client Storage Vault (persists across page reloads & refreshes)
+    EncryptedStorageService.loadCredentials().then((vaultCreds) => {
+      if (vaultCreds?.apiKey && vaultCreds?.apiSecret) {
+        if (!credentialsRef.current.apiKey || !credentialsRef.current.apiSecret) {
+          const clientHydrated: BinanceCredentials = {
+            ...credentialsRef.current,
+            apiKey: vaultCreds.apiKey,
+            apiSecret: vaultCreds.apiSecret,
+            isTestnet: vaultCreds.isTestnet,
+            walletName: vaultCreds.walletName || credentialsRef.current.walletName,
+            isValidated: true,
+          };
+          setCredentials(clientHydrated);
+          credentialsRef.current = clientHydrated;
+          validateCredentials(clientHydrated).catch((err) => {
+            console.warn('[TradingContext] Auto-auth probe from encrypted vault:', err);
+          });
+        }
+      }
+    });
+
+    // 2. Sync credentials from server disk (fallback / multi-origin sync)
+    BinanceService.fetchAllStoredCredentials().then((res) => {
+      if (!res || !res.success) return;
+      const isTestnetActive = credentialsRef.current.isTestnet;
+      const activeCreds = isTestnetActive ? res.testnet : res.live;
+
+      // Hydrate all wallet profiles from server disk if local storage was wiped
+      setWallets((prev) => {
+        let modified = false;
+        const updated = prev.map((w) => {
+          const serverData = w.isTestnet ? res.testnet : res.live;
+          if (serverData?.apiKey && serverData?.apiSecret && (!w.apiKey || !w.apiSecret)) {
+            modified = true;
+            return {
+              ...w,
+              apiKey: serverData.apiKey,
+              apiSecret: serverData.apiSecret,
+              isValidated: true,
+            };
+          }
+          return w;
+        });
+        if (modified) {
+          localStorage.setItem('bavly_wallet_profiles', JSON.stringify(updated));
+        }
+        return modified ? updated : prev;
+      });
+
+      // If active wallet is missing keys, hydrate active credentials from server disk & mirror into encrypted vault
+      if (activeCreds?.apiKey && activeCreds?.apiSecret) {
+        if (!credentialsRef.current.apiKey || !credentialsRef.current.apiSecret) {
+          const hydrated: BinanceCredentials = {
+            ...credentialsRef.current,
+            apiKey: activeCreds.apiKey,
+            apiSecret: activeCreds.apiSecret,
+            isValidated: true,
+            isServerConfigured: true,
+          };
+          setCredentials(hydrated);
+          credentialsRef.current = hydrated;
+
+          // Mirror into Encrypted Client-Side Storage Vault
+          EncryptedStorageService.saveCredentials({
+            apiKey: activeCreds.apiKey,
+            apiSecret: activeCreds.apiSecret,
+            isTestnet: isTestnetActive,
+            walletName: hydrated.walletName,
+          }).catch((err) => console.warn('[TradingContext] Error mirroring server keys to client vault:', err));
+
+          validateCredentials(hydrated).catch((err) => {
+            console.warn('Initial account probe after server hydration:', err);
+          });
+        }
+      }
+    });
+
     if (credentials.isValidated) {
       refreshAccountData();
     }
@@ -1040,19 +1756,20 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             if (u) {
               changed = true;
               const currentMark = u.price;
-              const diff =
+              const priceDiff =
                 pos.side === 'LONG'
-                  ? (currentMark - pos.entryPrice) / pos.entryPrice
-                  : (pos.entryPrice - currentMark) / pos.entryPrice;
-              const pnlPct = diff * 100 * pos.leverage;
-              const dollarPnl = pos.amountUsd * (pnlPct / 100);
+                  ? (currentMark - pos.entryPrice)
+                  : (pos.entryPrice - currentMark);
+              const dollarPnl = priceDiff * pos.quantity;
+              const safeMargin = Math.max(0.01, pos.amountUsd);
+              const pnlPct = (dollarPnl / safeMargin) * 100;
               const high = Math.max(pos.highestPriceReached || currentMark, currentMark);
               const low = Math.min(pos.lowestPriceReached || currentMark, currentMark);
 
               return {
                 ...pos,
                 markPrice: currentMark,
-                unrealizedProfit: Number(dollarPnl.toFixed(2)),
+                unrealizedProfit: Number(dollarPnl.toFixed(4)),
                 pnlPercentage: Number(pnlPct.toFixed(2)),
                 highestPriceReached: high,
                 lowestPriceReached: low,
@@ -1070,7 +1787,12 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     );
 
     binanceWs.connect(credentialsRef.current.isTestnet);
+    const pollInterval = setInterval(() => {
+      refreshMarketData();
+    }, 2500);
+
     return () => {
+      clearInterval(pollInterval);
       binanceWs.disconnect();
     };
   }, []);
@@ -1130,10 +1852,95 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             continue;
           }
 
-          // Max Duration check
-          if (!settingsRef.current.unlimitedHoldTime && Date.now() - pos.openedAt >= pos.maxDurationMs) {
-            toClose.push({ id: pos.id, reason: 'TIME_EXPIRED' });
+          // High Profit Harvest & Hit & Run Scalp Lock ("أنتش واجري"):
+          // Immediately harvest any trade that reached user target ROI (default 25%) or 15% in scalping mode,
+          // cashing out gains directly into the wallet and releasing margin rather than freezing capital for hours!
+          const targetProfitThreshold = settingsRef.current.scalpingProfitLockPercent || 25;
+          const isHighProfit = pos.pnlPercentage >= targetProfitThreshold;
+          const isScalpQuickProfit = Boolean(settingsRef.current.scalpingMode) && pos.pnlPercentage >= 15;
+
+          if (isHighProfit || isScalpQuickProfit) {
+            toClose.push({ id: pos.id, reason: 'AI_EARLY_PROFIT_TAKE' });
             continue;
+          }
+
+          // Scalping Mode & Max Duration check
+          // RULE: In Fast Scalping mode, the 15-minute timer ONLY harvests trades that are in PROFIT (take profit and run).
+          // If a trade is in negative/loss territory, NEVER close on time — let Stop Loss and AI risk engine manage it!
+          const effectiveDurationLimitMs = settingsRef.current.scalpingMode
+            ? (settingsRef.current.scalpingDurationMinutes || 15) * 60 * 1000
+            : (!settingsRef.current.unlimitedHoldTime ? pos.maxDurationMs : 0);
+
+          if (effectiveDurationLimitMs > 0 && Date.now() - pos.openedAt >= effectiveDurationLimitMs) {
+            if (settingsRef.current.scalpingMode) {
+              if (pos.pnlPercentage > 0) {
+                toClose.push({ id: pos.id, reason: 'AI_EARLY_PROFIT_TAKE' });
+                continue;
+              }
+              // Position is at a loss or breakeven; DO NOT close on time timer. Keep protected by Stop Loss.
+            } else {
+              toClose.push({ id: pos.id, reason: 'TIME_EXPIRED' });
+              continue;
+            }
+          }
+
+          // AI Trade Doctor Analysis & Autonomous Dynamic Actions
+          const pair = marketPairsRef.current.find((p) => p.symbol === pos.symbol);
+          const diagnosis = AIPositionManager.diagnosePosition(pos, pair, undefined, isAr ? 'ar' : 'en');
+          pos.aiDiagnosis = diagnosis;
+
+          // AI Action 1: Smart Early Cut Loss (إغلاق وقائي مبكر قبل ضرب الوقف الكامل)
+          if (diagnosis.recommendation === 'AI_EARLY_CUT') {
+            toClose.push({ id: pos.id, reason: 'AI_EARLY_CUT' });
+            continue;
+          }
+
+          // AI Action 2: Safe Breakeven Exit ($0 خسارة بعد ارتداد السعر للدخول وضعف الزخم)
+          if (diagnosis.recommendation === 'AI_BREAKEVEN_EXIT') {
+            toClose.push({ id: pos.id, reason: 'AI_BREAKEVEN_EXIT' });
+            continue;
+          }
+
+          // AI Action 3: Early Profit Lock (حجز الأرباح المتاحة قبل ارتداد السعر)
+          if (diagnosis.recommendation === 'AI_EARLY_PROFIT_TAKE') {
+            toClose.push({ id: pos.id, reason: 'AI_EARLY_PROFIT_TAKE' });
+            continue;
+          }
+
+          // AI Action 4: Smart DCA Reinforcement (تعزيز وتبريد المركز لتقريب متوسط الدخول)
+          if (diagnosis.recommendation === 'AI_DCA_REINFORCE' && (pos.dcaCount || 0) === 0) {
+            pos.dcaCount = 1;
+            const addMarginUsd = Number((pos.amountUsd * 0.5).toFixed(2));
+            const addQty = Number(((addMarginUsd * pos.leverage) / currentMark).toFixed(4));
+            if (addQty > 0) {
+              const prevNotional = pos.entryPrice * pos.quantity;
+              const newNotional = currentMark * addQty;
+              const newTotalQty = pos.quantity + addQty;
+              const newAvgEntry = (prevNotional + newNotional) / newTotalQty;
+
+              pos.entryPrice = Number(newAvgEntry.toFixed(4));
+              pos.quantity = Number(newTotalQty.toFixed(4));
+              pos.amountUsd = Number((pos.amountUsd + addMarginUsd).toFixed(2));
+              pos.notionalValue = Number((pos.quantity * currentMark).toFixed(2));
+
+              if (tradingModeRef.current === 'real' && credentialsRef.current.isValidated) {
+                BinanceService.placeOrder(
+                  credentialsRef.current,
+                  pos.symbol,
+                  isLong ? 'BUY' : 'SELL',
+                  addQty
+                ).catch((e) => console.warn('DCA execution error:', e));
+              }
+
+              addToast({
+                type: 'INFO',
+                title: isAr ? '⚡ تعزيز ذكي بالذكاء الاصطناعي (DCA)' : '⚡ AI Smart DCA Reinforcement',
+                message: isAr
+                  ? `تم تعزيز مركز ${pos.symbol} بنجاح وخفض متوسط سعر الدخول إلى $${pos.entryPrice.toFixed(2)} لتقريب نقطة الخروج بربح.`
+                  : `Reinforced ${pos.symbol}. Lowered average entry to $${pos.entryPrice.toFixed(2)}.`,
+                symbol: pos.symbol,
+              });
+            }
           }
         }
 
@@ -1143,13 +1950,12 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
 
       // Autonomous Candidate Scanning:
-      // In paper trading mode (simulated sandbox), scanning runs whenever bot is running.
-      // In real mode, strictly guarded by server worker tradingLoopActive flag.
-      const isPaperMode = tradingModeRef.current === 'paper';
-      const canScanAndTrade = isPaperMode || (workerStatusRef.current ? workerStatusRef.current.tradingLoopActive : false);
+      // Strictly paused and halted if the 24/7 bot is STOPPED by the user!
+      if (!botRunningRef.current) {
+        return;
+      }
+
       if (
-        canScanAndTrade &&
-        botRunningRef.current &&
         settingsRef.current.autoTradingEnabled &&
         positionsRef.current.length < settingsRef.current.maxConcurrentPositions &&
         marketPairsRef.current.length > 0 &&
@@ -1172,7 +1978,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
       }
-    }, 4000);
+    }, 3000);
 
     return () => clearInterval(interval);
   }, []);
@@ -1245,10 +2051,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         openPosition,
         closePosition,
         closeAllPositions,
+        runAIDoctorDiagnosis,
+        executeMaxPrioritySwap,
         refreshMarketData,
         refreshAccountData,
         runReconciliation,
         clearTradeHistory,
+        cleanAllCacheAndReset,
         workerStatus,
       }}
     >

@@ -17,6 +17,8 @@ import {
   ArrowUpRight,
   BarChart3,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   DollarSign,
   Flame,
   Info,
@@ -36,7 +38,18 @@ export const EquityChart: React.FC = () => {
   const { balance, closedTrades, positions, t, language } = useTrading();
   const [chartType, setChartType] = useState<'equity' | 'pnl'>('equity');
   const [showSmartMarkers, setShowSmartMarkers] = useState<boolean>(true);
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('apex_equity_collapsed') === 'true';
+  });
   const isArabic = language === 'ar';
+
+  const toggleCollapsed = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem('apex_equity_collapsed', String(next));
+      return next;
+    });
+  };
 
   // Build sequential data points for equity and trade-by-trade PnL with Smart Trailing markers
   const chartData = useMemo(() => {
@@ -228,11 +241,37 @@ export const EquityChart: React.FC = () => {
               <span>{isArabic ? 'عائد الصفقات' : 'PnL'}</span>
             </button>
           </div>
+
+          {/* Collapse / Expand Toggle Button */}
+          <button
+            onClick={toggleCollapsed}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 hover:text-white transition cursor-pointer"
+            title={isCollapsed ? (isArabic ? 'توسيع المخطط' : 'Expand') : (isArabic ? 'طي وانكماش المخطط' : 'Collapse')}
+          >
+            {isCollapsed ? (
+              <>
+                <ChevronDown className="w-4 h-4 text-amber-400" />
+                <span className="text-[11px] font-semibold text-amber-400">
+                  {isArabic ? 'توسيع' : 'Expand'}
+                </span>
+              </>
+            ) : (
+              <>
+                <ChevronUp className="w-4 h-4 text-slate-400" />
+                <span className="text-[11px] font-medium text-slate-400">
+                  {isArabic ? 'طي' : 'Collapse'}
+                </span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* Summary KPI Pills */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      {/* Main Visual Display: KPI Summary Pills + Chart Canvas + Legend */}
+      {!isCollapsed && (
+        <>
+          {/* Summary KPI Pills */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 animate-in fade-in duration-200">
         <div className="bg-slate-900/80 border border-slate-800/80 rounded-xl p-2.5">
           <div className="text-[10px] text-slate-400 mb-0.5">
             {isArabic ? 'إجمالي نمو المحفظة' : 'Total Equity Growth'}
@@ -507,6 +546,8 @@ export const EquityChart: React.FC = () => {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

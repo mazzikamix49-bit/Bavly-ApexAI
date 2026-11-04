@@ -1,9 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   DollarSign,
   HelpCircle,
   Info,
@@ -25,7 +27,18 @@ interface GlobalRiskExposureGaugeProps {
 
 export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = ({ compact = false }) => {
   const { balance, positions, settings, closeAllPositions, language } = useTrading();
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('apex_gauge_collapsed') === 'true';
+  });
   const isArabic = language === 'ar';
+
+  const toggleCollapsed = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem('apex_gauge_collapsed', String(next));
+      return next;
+    });
+  };
 
   // 1. Calculate Core Margin & Capital Metrics
   const metrics = useMemo(() => {
@@ -153,7 +166,7 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
           </div>
         </div>
 
-        {/* Quick Safety Indicator */}
+        {/* Quick Safety Indicator & Collapse Toggle */}
         <div className="flex items-center gap-2 self-start sm:self-center">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
             <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
@@ -161,24 +174,54 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
             <span className="font-mono font-bold text-white">{metrics.effectiveLeverage}x</span>
           </div>
 
+          {isCollapsed && (
+            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs font-mono">
+              <span className="text-slate-400">{isArabic ? 'المحجوز:' : 'Locked:'}</span>
+              <span className="font-bold text-amber-400">{metrics.lockedPercentage}%</span>
+              <span className="text-slate-600">|</span>
+              <span className="text-slate-400">{isArabic ? 'الهامش الحر:' : 'Free:'}</span>
+              <span className="font-bold text-emerald-400">${metrics.freeMargin.toFixed(1)}</span>
+            </div>
+          )}
+
           {metrics.lockedPercentage > 70 && positions.length > 0 && (
             <button
-              onClick={() => {
-                if (window.confirm(isArabic ? 'هل تريد إغلاق الصفقات لتقليل المخاطر فوراً؟' : 'Close positions to immediately reduce risk exposure?')) {
-                  closeAllPositions();
-                }
-              }}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 text-xs font-bold transition animate-pulse"
+              onClick={() => closeAllPositions()}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 text-xs font-bold transition animate-pulse cursor-pointer"
             >
               <ShieldAlert className="w-3.5 h-3.5" />
               <span>{isArabic ? 'تقليص المخاطر فوراً' : 'De-Risk Now'}</span>
             </button>
           )}
+
+          {/* Collapse / Expand Toggle Button */}
+          <button
+            onClick={toggleCollapsed}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 hover:text-white transition cursor-pointer"
+            title={isCollapsed ? (isArabic ? 'توسيع المقياس' : 'Expand') : (isArabic ? 'طي وانكماش المقياس' : 'Collapse')}
+          >
+            {isCollapsed ? (
+              <>
+                <ChevronDown className="w-4 h-4 text-amber-400" />
+                <span className="text-[11px] font-semibold text-amber-400">
+                  {isArabic ? 'توسيع' : 'Expand'}
+                </span>
+              </>
+            ) : (
+              <>
+                <ChevronUp className="w-4 h-4 text-slate-400" />
+                <span className="text-[11px] font-medium text-slate-400">
+                  {isArabic ? 'طي' : 'Collapse'}
+                </span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Main Visual Display: Dial Gauge + KPI Breakdown */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+      {!isCollapsed && (
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center animate-in fade-in duration-200">
         {/* Semi-Circular SVG Speedometer Gauge (5 Columns on Desktop) */}
         <div className="md:col-span-5 flex flex-col items-center justify-center p-3 bg-slate-900/50 border border-slate-800/80 rounded-xl relative">
           <div className="relative w-56 h-32 flex items-end justify-center overflow-visible">
@@ -408,6 +451,7 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };

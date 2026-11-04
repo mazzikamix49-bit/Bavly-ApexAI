@@ -24,11 +24,14 @@ import {
   AlertCircle,
   Server,
   RefreshCw,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { BinanceService } from '../services/binanceService';
 import { TelegramService } from '../services/telegramService';
 import { RiskManagementService } from '../services/riskManagementService';
-import { AllowedDirection, CapitalProfile, DEFAULT_CAPITAL_PROFILE } from '../types/trading';
+import { EncryptedStorageService } from '../services/encryptedStorageService';
+import { AllowedDirection, CapitalProfile, DEFAULT_CAPITAL_PROFILE, PositionSizingMode } from '../types/trading';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -57,8 +60,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     telegramSettings,
     updateTelegramSettings,
     clearTradeHistory,
+    cleanAllCacheAndReset,
     balance,
     positions,
+    clearAllToasts,
   } = useTrading();
 
   const isArabic = language === 'ar';
@@ -67,6 +72,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   // Local state for credentials & wallet profiles
   const [walletName, setWalletName] = useState(activeWallet?.name || 'محفظة بافلي بينانس (Bavly Futures)');
   const [isTestnet, setIsTestnet] = useState(credentials.isTestnet);
+  const [apiKey, setApiKey] = useState(credentials.apiKey || '');
+  const [apiSecret, setApiSecret] = useState(credentials.apiSecret || '');
+  const [showSecret, setShowSecret] = useState(false);
+  const [hasCleanedCache, setHasCleanedCache] = useState(false);
+  const [isCleaningCache, setIsCleaningCache] = useState(false);
   const [serverConfig, setServerConfig] = useState<{
     testnetConfigured: boolean;
     prodConfigured: boolean;
@@ -92,12 +102,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     if (activeWallet) {
       setWalletName(activeWallet.name);
       setIsTestnet(activeWallet.isTestnet);
+      setApiKey(activeWallet.apiKey || credentials.apiKey || '');
+      setApiSecret(activeWallet.apiSecret || credentials.apiSecret || '');
     }
-  }, [activeWalletId]);
+  }, [activeWalletId, credentials.id, credentials.apiKey, credentials.apiSecret]);
 
   // Local state for strategy
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentPositions);
   const [positionSize, setPositionSize] = useState(settings.positionSizeUsd);
+  const [positionSizingMode, setPositionSizingMode] = useState<PositionSizingMode>(
+    settings.positionSizingMode || 'RISK_PORTFOLIO_DYNAMIC'
+  );
   const [leverage, setLeverage] = useState(settings.leverage);
   const [direction, setDirection] = useState<AllowedDirection>(settings.allowedDirection);
   const [maxDurationHours, setMaxDurationHours] = useState(settings.maxTradeDurationHours);
@@ -106,6 +121,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [minConfidence, setMinConfidence] = useState(settings.minAiConfidence);
   const [multiTargetTrailing, setMultiTargetTrailing] = useState(settings.multiTargetTrailing ?? true);
   const [unlimitedHoldTime, setUnlimitedHoldTime] = useState(settings.unlimitedHoldTime ?? true);
+  const [scalpingMode, setScalpingMode] = useState(settings.scalpingMode ?? false);
+  const [scalpingDurationMinutes, setScalpingDurationMinutes] = useState(settings.scalpingDurationMinutes || 15);
+  const [scalpingProfitLockPercent, setScalpingProfitLockPercent] = useState(settings.scalpingProfitLockPercent || 25);
   const [enableToastAlerts, setEnableToastAlerts] = useState(settings.enableToastAlerts ?? true);
 
   // Reset confirmation state
@@ -117,17 +135,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
   // Saved notification toast
   const [showSavedToast, setShowSavedToast] = useState(false);
+  const [savedToastText, setSavedToastText] = useState('');
+  const [isSavingApi, setIsSavingApi] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSaveApi = () => {
+  const handleSaveApi = async () => {
+    setIsSavingApi(true);
     setCustomWalletName(walletName);
+    const trimmedKey = apiKey.trim();
+    const trimmedSecret = apiSecret.trim();
+
     updateCredentials({
       walletName,
       isTestnet,
+      apiKey: trimmedKey,
+      apiSecret: trimmedSecret,
     });
+    saveWalletProfile({
+      id: activeWalletId,
+      name: walletName,
+      isTestnet,
+      apiKey: trimmedKey,
+      apiSecret: trimmedSecret,
+      isValidated: credentials.isValidated,
+    });
+
+    if (trimmedKey && trimmedSecret) {
+      try {
+        const res = await BinanceService.saveCredentials({
+          isTestnet,
+          apiKey: trimmedKey,
+          apiSecret: trimmedSecret,
+        });
+        if (res.success) {
+          setServerConfig((prev) => ({
+            ...prev,
+            [isTestnet ? 'testnetConfigured' : 'prodConfigured']: true,
+          }));
+        }
+      } catch (err: any) {
+        console.warn('Failed to save credentials to backend disk:', err);
+      }
+
+      try {
+        await EncryptedStorageService.saveCredentials({
+          apiKey: trimmedKey,
+          apiSecret: trimmedSecret,
+          isTestnet,
+          walletName,
+        });
+      } catch (err: any) {
+        console.warn('Failed to save encrypted credentials locally:', err);
+      }
+    }
+
+    setIsSavingApi(false);
+    setSavedToastText(
+      isArabic
+        ? '✓ تم تشفير وحفظ المفاتيح بنجاح (AES-GCM) وثبتت في المتصفح وعلى السيرفر!'
+        : '✓ API keys encrypted (AES-GCM) & saved permanently across browser refreshes & server!'
+    );
     setShowSavedToast(true);
-    setTimeout(() => setShowSavedToast(false), 2500);
+    setTimeout(() => setShowSavedToast(false), 3500);
   };
 
   const handleAddNewWallet = () => {
@@ -162,6 +232,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       maxConcurrentPositions: maxConcurrent,
       riskPerTradePercent: 1.0,
       positionSizeUsd: positionSize,
+      positionSizingMode,
       leverage,
       allowedDirection: direction,
       maxTradeDurationHours: maxDurationHours,
@@ -170,14 +241,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       trailingStopPercent: trailingStop,
       useTrailingStop: useTrailing,
       maxDailyDrawdownPercent: 0,
+      maxConsecutiveLosses: 0,
+      lossCooldownMinutes: 0,
       minAiConfidence: minConfidence,
       aiDynamicTargets: true,
       multiTargetTrailing,
-      unlimitedHoldTime,
+      unlimitedHoldTime: !scalpingMode && unlimitedHoldTime,
+      scalpingMode,
+      scalpingDurationMinutes,
+      scalpingProfitLockPercent,
       enableToastAlerts,
       enableCapitalLimit: false,
       maxAllocatedCapitalUsd: 0,
     });
+    setSavedToastText(t.settingsSaved);
     setShowSavedToast(true);
     setTimeout(() => setShowSavedToast(false), 2500);
   };
@@ -387,10 +464,134 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   </div>
                   <input
                     type="checkbox"
-                    checked={unlimitedHoldTime}
+                    checked={unlimitedHoldTime && !scalpingMode}
+                    disabled={scalpingMode}
                     onChange={(e) => setUnlimitedHoldTime(e.target.checked)}
-                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0"
+                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0 disabled:opacity-40"
                   />
+                </div>
+
+                {/* Fast Scalping Mode ("أنتش واجري" / Hit & Run) */}
+                <div className={`p-4 rounded-xl border transition-all ${
+                  scalpingMode
+                    ? 'bg-amber-500/10 border-amber-500/40 ring-1 ring-amber-500/20'
+                    : 'bg-slate-900/80 border-slate-800'
+                } space-y-3`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="font-bold text-white flex items-center gap-2">
+                          <span>{isArabic ? '⚡ وضع السكالبينج السريع الاحترافي (أنتش واجري / Hit & Run)' : '⚡ Fast Scalping Mode (Hit & Run Profit Locking)'}</span>
+                          <span className="text-[10px] bg-amber-500/20 text-amber-300 font-mono px-1.5 py-0.5 rounded border border-amber-500/30">
+                            {isArabic ? 'نشط وسريع' : 'High Velocity'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                          {isArabic
+                            ? 'اقتناص أرباح سريعة ومضمونة (15% إلى 35% ROI) وتأمينها فوراً في المحفظة وتحرير الهامش لصفقات جديدة دون تجميد الأموال لساعات.'
+                            : 'Harvests rapid momentum profits (15% to 35% ROI), cashing out directly to wallet and freeing margin instead of leaving capital frozen for hours.'}
+                        </div>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={scalpingMode}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setScalpingMode(val);
+                        if (val) setUnlimitedHoldTime(false);
+                      }}
+                      className="w-5 h-5 accent-amber-500 rounded cursor-pointer shrink-0"
+                    />
+                  </div>
+
+                  {/* Golden Safety Rule Note */}
+                  <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/90 text-[11px] text-slate-300 flex items-start gap-2 leading-relaxed">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-emerald-400">
+                        {isArabic ? 'قاعدة الأمان الذهبية: ' : 'Capital Protection Rule: '}
+                      </span>
+                      <span>
+                        {isArabic
+                          ? 'الصفقات الخاسرة لا تُغلق تعسفياً بمرور الـ 15 دقيقة أبداً! التوقيت مخصص فقط لحصد الأرباح الرابحة ("أنتش واجري")، بينما الصفقات الخاسرة تظل محمية بوقف الخسارة Stop Loss أو الإغلاق الوقائي الذكي.'
+                          : 'Losing positions are NEVER exited on timer! The time limit strictly applies to harvesting profits. Losing trades stay guarded by structural Stop Loss.'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {scalpingMode && (
+                    <div className="pt-2 border-t border-slate-800/80 space-y-3">
+                      {/* Target Profit % Selector */}
+                      <div>
+                        <div className="flex justify-between items-center mb-1.5">
+                          <span className="text-[11px] text-slate-200 font-bold">
+                            {isArabic ? '🎯 هدف حصد الربح السريع ("أنتش واجري"): ' : '🎯 Hit & Run Profit Target ROI:'}
+                          </span>
+                          <span className="font-mono font-bold text-amber-400 text-xs">
+                            +{scalpingProfitLockPercent}% ROI
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1.5 font-mono text-[11px]">
+                          {[15, 20, 25, 35, 50].map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              onClick={() => setScalpingProfitLockPercent(pct)}
+                              className={`py-1 rounded-lg border text-center transition ${
+                                scalpingProfitLockPercent === pct
+                                  ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-sm'
+                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                              }`}
+                            >
+                              +{pct}%
+                            </button>
+                          ))}
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-1">
+                          {isArabic
+                            ? 'بمجرد وصول أي صفقة لهذه النسبة (أو أكثر)، يتم حجز الربح فوراً وإغلاقها وتحرير رأس المال.'
+                            : 'Once a trade reaches this ROI (or higher), profit is locked immediately into wallet.'}
+                        </div>
+                      </div>
+
+                      {/* Scalp Duration Limit */}
+                      <div>
+                        <div className="flex justify-between items-center mb-1.5">
+                          <span className="text-[11px] text-slate-200 font-bold">
+                            {isArabic ? '⏱️ أقصى وقت للمركز الرابح (حصد وتدوير):' : '⏱️ Max Duration for Winning Trade:'}
+                          </span>
+                          <span className="font-mono font-bold text-white text-xs">
+                            {scalpingDurationMinutes} {isArabic ? 'دقيقة' : 'min'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5 font-mono text-[11px]">
+                          {[15, 20, 30, 45].map((mins) => (
+                            <button
+                              key={mins}
+                              type="button"
+                              onClick={() => setScalpingDurationMinutes(mins)}
+                              className={`py-1 rounded-lg border text-center transition ${
+                                scalpingDurationMinutes === mins
+                                  ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-sm'
+                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                              }`}
+                            >
+                              {mins} {isArabic ? 'دقيقة' : 'm'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-1">
+                          {isArabic
+                            ? 'إذا مرت هذه المدة والصفقة رابحة بأي ربح، تُغلق فوراً ويتحول المكسب للمحفظة.'
+                            : 'If this duration elapses while trade is in positive profit, it cashes out immediately.'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
               {/* Max Concurrent Positions */}
@@ -419,11 +620,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 </div>
               </div>
 
+              {/* Dual Sizing Control (الخيار في أيدينا) */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 via-slate-900 to-slate-950 border border-amber-500/30 space-y-3 shadow-md">
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-white text-xs flex items-center gap-1.5">
+                    <Shield className="w-4 h-4 text-amber-400" />
+                    <span>{isArabic ? 'الخيار في أيدينا: آلية تحديد حجم ومخاطرة الصفقة' : 'Dual Sizing Control: Position Sizing & Risk Mode'}</span>
+                  </label>
+                  <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold border border-amber-500/30">
+                    {positionSizingMode === 'RISK_PORTFOLIO_DYNAMIC'
+                      ? (isArabic ? 'ديناميكي من إجمالي المحفظة' : 'Dynamic Risk Budget')
+                      : (isArabic ? 'هامش ثابت صارم لكل صفقة' : 'Strict Fixed Margin')}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Option 1: Dynamic Portfolio Risk */}
+                  <div
+                    onClick={() => setPositionSizingMode('RISK_PORTFOLIO_DYNAMIC')}
+                    className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                      positionSizingMode === 'RISK_PORTFOLIO_DYNAMIC'
+                        ? 'bg-amber-500/15 border-amber-500 text-white shadow-md shadow-amber-500/15 ring-1 ring-amber-500/30'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Coins className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="font-bold text-xs text-amber-300">
+                          {isArabic ? '1. حاسبة المخاطر من إجمالي المحفظة' : '1. Dynamic Portfolio Risk'}
+                        </span>
+                      </div>
+                      <input
+                        type="radio"
+                        name="sizing_mode"
+                        checked={positionSizingMode === 'RISK_PORTFOLIO_DYNAMIC'}
+                        onChange={() => setPositionSizingMode('RISK_PORTFOLIO_DYNAMIC')}
+                        className="accent-amber-500 cursor-pointer"
+                      />
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      {isArabic
+                        ? 'يعتمد كلياً على نسبة المخاطرة من إجمالي رصيد المحفظة مقسومة على مسافة الوقف. في الصفقات ذات الوقف القريب (مثل 0.08% و0.05%)، يقوم المحرك بفتح كمية عقود أكبر وهامش محجوز أعلى ($80-$120) كما كان يعمل في البداية مع ضمان عدم تجاوز ميزانية المخاطرة.'
+                        : 'Calculates contract quantity strictly from Portfolio Risk Budget / Stop Distance. Scales up contracts and margin on tight stops ($80-$120) while protecting dollar equity.'}
+                    </p>
+                  </div>
+
+                  {/* Option 2: Strict Fixed Margin */}
+                  <div
+                    onClick={() => setPositionSizingMode('STRICT_FIXED_MARGIN')}
+                    className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                      positionSizingMode === 'STRICT_FIXED_MARGIN'
+                        ? 'bg-amber-500/15 border-amber-500 text-white shadow-md shadow-amber-500/15 ring-1 ring-amber-500/30'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="font-bold text-xs text-emerald-300">
+                          {isArabic ? '2. التزام صارم بالحد الأقصى للهامش' : '2. Strict Fixed Margin Cap'}
+                        </span>
+                      </div>
+                      <input
+                        type="radio"
+                        name="sizing_mode"
+                        checked={positionSizingMode === 'STRICT_FIXED_MARGIN'}
+                        onChange={() => setPositionSizingMode('STRICT_FIXED_MARGIN')}
+                        className="accent-amber-500 cursor-pointer"
+                      />
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      {isArabic
+                        ? 'يلتزم المحرك التزاماً صارماً بمبلغ الهامش المحجوز المحدد بالدولار أدناه (مثلاً 2 دولار USDT لكل صفقة) ولا يتجاوزه إطلاقاً أياً كانت مسافة وقف الخسارة.'
+                        : 'Strictly enforces the dollar margin cap configured below (e.g. $2 USDT) per trade without exception.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* Position Size ($ USD) */}
               <div>
                 <div className="flex justify-between items-center mb-1.5">
                   <label className="font-semibold text-slate-200">
-                    {t.positionSizeLabel}
+                    {positionSizingMode === 'STRICT_FIXED_MARGIN'
+                      ? (isArabic ? 'الحد الأقصى الصارم للهامش لكل صفقة ($ USDT)' : 'Strict Margin Cap per Trade ($ USDT)')
+                      : t.positionSizeLabel}
                   </label>
                   <span className="font-mono font-bold text-white text-sm">
                     ${positionSize.toFixed(2)} USDT
@@ -490,9 +772,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   onChange={(e) => setLeverage(parseInt(e.target.value, 10))}
                   className="w-full accent-amber-500 cursor-pointer"
                 />
-                <p className="text-[11px] text-amber-500/80 mt-1">
-                  {t.leverageWarning}
-                </p>
+                <div className="mt-2 p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] leading-relaxed text-slate-300 space-y-1">
+                  <div className="font-bold text-amber-400 flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isArabic ? 'حماية الرافعة والتكيف التلقائي (Adaptive Leverage)' : 'Adaptive Symbol Leverage Cap'}</span>
+                  </div>
+                  <p>
+                    {isArabic
+                      ? `الصفقات ستفتح بالرافعة ${leverage}x التي اخترتها. وإذا كانت هناك عملة تحدد باينانس لها سقفاً أقل (مثل 10x أو 5x)، سيفتح البوت تلقائياً بالرافعة القصوى المسموحة لتلك العملة، ولن يتجاوز الـ ${leverage}x المحددة أبداً (لا 25x ولا 30x).`
+                      : `Positions will enter at your target ${leverage}x leverage. For symbols where Binance enforces a lower cap (e.g. 10x or 5x), the bot automatically adapts to that symbol's max allowable leverage and will NEVER exceed your ${leverage}x limit.`}
+                  </p>
+                </div>
               </div>
 
               {/* Allowed Trade Direction */}
@@ -848,32 +1138,146 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <input
-                    type="checkbox"
-                    id="testnet-check"
-                    checked={isTestnet}
-                    onChange={(e) => setIsTestnet(e.target.checked)}
-                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
-                  />
-                  <label htmlFor="testnet-check" className="text-slate-300 cursor-pointer text-xs">
-                    {t.isTestnetLabel}
+                {/* API Key Input Field */}
+                <div>
+                  <label className="block font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{language === 'ar' ? 'مفتاح باينانس (Binance API Key):' : 'Binance API Key:'}</span>
                   </label>
+                  <input
+                    type="text"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={language === 'ar' ? 'أدخل Binance API Key الخاص بحسابك...' : 'Enter your Binance Futures API Key...'}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                {/* API Secret Input Field */}
+                <div>
+                  <label className="block font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{language === 'ar' ? 'المفتاح السري (Binance Secret Key):' : 'Binance Secret Key:'}</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showSecret ? 'text' : 'password'}
+                      value={apiSecret}
+                      onChange={(e) => setApiSecret(e.target.value)}
+                      placeholder={language === 'ar' ? 'أدخل Binance Secret Key...' : 'Enter your Binance Secret Key...'}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 pr-10 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSecret(!showSecret)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    {language === 'ar'
+                      ? 'ملاحظة: يمكنك إدخال المفاتيح هنا مباشرة، أو تركها فارغة للقراءة من المتغيرات البيئية (.env).'
+                      : 'Optional: Enter keys directly here, or leave blank to load from server environment variables.'}
+                  </div>
+                </div>
+
+                {/* Environment Selector: Binance Demo vs Binance Live */}
+                <div className="space-y-2 pt-1">
+                  <label className="block font-semibold text-slate-200 text-xs">
+                    {language === 'ar' ? 'بيئة التداول في منصة باينانس:' : 'Binance Trading Environment:'}
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsTestnet(true)}
+                      className={`p-3 rounded-xl border text-right transition flex flex-col gap-1 cursor-pointer ${
+                        isTestnet
+                          ? 'bg-amber-500/15 border-amber-500/50 text-white shadow-sm'
+                          : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-amber-300">
+                          {language === 'ar' ? 'باينانس ديمو التجريبي' : 'Binance Demo (Mock)'}
+                        </span>
+                        {isTestnet && <span className="text-[10px] text-amber-400">● {language === 'ar' ? 'محدد' : 'Active'}</span>}
+                      </div>
+                      <span className="text-[10px] text-slate-400 leading-normal">
+                        {language === 'ar'
+                          ? 'حساب عقود آجلة تجريبي على سيرفر باينانس ديمو (testnet.binancefuture.com) بدون مخاطرة بأموال حقيقية.'
+                          : 'Official Binance Futures Demo sandbox with virtual balance on testnet.binancefuture.com.'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsTestnet(false)}
+                      className={`p-3 rounded-xl border text-right transition flex flex-col gap-1 cursor-pointer ${
+                        !isTestnet
+                          ? 'bg-emerald-500/15 border-emerald-500/50 text-white shadow-sm'
+                          : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-emerald-300">
+                          {language === 'ar' ? 'باينانس الحساب الحقيقي' : 'Binance Live (Real)'}
+                        </span>
+                        {!isTestnet && <span className="text-[10px] text-emerald-400">● {language === 'ar' ? 'محدد' : 'Active'}</span>}
+                      </div>
+                      <span className="text-[10px] text-slate-400 leading-normal">
+                        {language === 'ar'
+                          ? 'تداول مباشر بأموال حقيقية على حسابك في منصة وتطبيق باينانس الرسمي (fapi.binance.com).'
+                          : 'Real live execution with your actual Binance account balance on fapi.binance.com.'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Anti -2015 Guidance Notice */}
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 space-y-1">
+                    <div className="font-bold text-amber-400 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      <span>{language === 'ar' ? 'تعليمات مهمة لضمان نجاح الاتصال وتفادي خطأ (-2015):' : 'Key Instructions to Avoid Error -2015:'}</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-[10px] leading-relaxed">
+                      {isTestnet ? (
+                        <>
+                          <li>{language === 'ar' ? 'تأكد من استخدام مفتاح تم إنشاؤه من منصة باينانس ديمو (testnet.binancefuture.com).' : 'Use API keys generated on testnet.binancefuture.com.'}</li>
+                          <li>{language === 'ar' ? 'مفاتيح باينانس الحقيقي لن تعمل على باينانس ديمو التجريبي.' : 'Live Binance account keys do not work on Demo sandbox.'}</li>
+                        </>
+                      ) : (
+                        <>
+                          <li>{language === 'ar' ? 'في حسابك على باينانس > إدارة الـ API، تأكد من تفعيل علامة الصح أمام: Enable Futures (تمكين العقود الآجلة).' : 'In Binance API Management, ensure "Enable Futures" permission is checked.'}</li>
+                          <li>{language === 'ar' ? 'تأكد من أن خيار قيود الـ IP هو (Unrestricted) أو إضافة خادمك للقائمة المسموحة.' : 'Verify IP Access Restrictions are set to unrestricted or whitelisted.'}</li>
+                        </>
+                      )}
+                    </ul>
+                  </div>
                 </div>
               </div>
 
               {/* Status / Error feedback */}
               {apiStatus === 'connected' && (
-                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>{t.apiValidSuccess}</span>
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span className="font-bold">{t.apiValidSuccess}</span>
+                  </div>
+                  {balance && typeof balance.totalWalletBalance === 'number' && balance.totalWalletBalance > 0 && (
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      ${balance.totalWalletBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
+                    </span>
+                  )}
                 </div>
               )}
 
               {apiStatus === 'error' && (
-                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400">
-                  <div className="font-bold">{t.apiValidFailed}</div>
-                  <div className="text-[11px] mt-1 font-mono text-rose-300">
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{t.apiValidFailed}</span>
+                  </div>
+                  <div className="text-[11px] font-sans text-rose-200/90 whitespace-pre-line leading-relaxed">
                     {apiErrorMessage}
                   </div>
                 </div>
@@ -882,18 +1286,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               <div className="grid grid-cols-2 gap-3 pt-2">
                 <button
                   onClick={handleSaveApi}
-                  className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition cursor-pointer"
+                  disabled={isSavingApi}
+                  className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
                 >
-                  {language === 'ar' ? 'حفظ إعدادات المحفظة' : 'Save Profile Settings'}
+                  {isSavingApi && <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />}
+                  <span>{language === 'ar' ? 'حفظ دائم للمحفظة والمفاتيح' : 'Save Permanently to Server'}</span>
                 </button>
 
                 <button
                   onClick={async () => {
-                    handleSaveApi();
+                    await handleSaveApi();
                     await validateCredentials({
                       id: activeWalletId,
                       walletName,
                       isTestnet,
+                      apiKey: apiKey.trim(),
+                      apiSecret: apiSecret.trim(),
                       isValidated: false,
                     });
                   }}
@@ -903,12 +1311,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   {isValidatingApi ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{language === 'ar' ? 'جارٍ الفحص...' : 'Checking...'}</span>
+                      <span>{language === 'ar' ? 'جارٍ الاتصال بـ Binance...' : 'Connecting...'}</span>
                     </>
                   ) : (
                     <>
                       <Shield className="w-4 h-4" />
-                      <span>{language === 'ar' ? 'فحص والتحقق من اتصال الخادم' : 'Verify Server Connection'}</span>
+                      <span>{language === 'ar' ? 'فحص والتحقق من حساب باينانس' : 'Verify Binance Connection'}</span>
                     </>
                   )}
                 </button>
@@ -936,7 +1344,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   <input
                     type="checkbox"
                     checked={enableToastAlerts}
-                    onChange={(e) => setEnableToastAlerts(e.target.checked)}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setEnableToastAlerts(val);
+                      updateSettings({ enableToastAlerts: val });
+                      if (!val) {
+                        clearAllToasts();
+                      }
+                    }}
                     className="w-4 h-4 accent-amber-500 rounded cursor-pointer shrink-0"
                   />
                 </div>
@@ -1035,33 +1450,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             </div>
           )}
 
-          {/* TAB 4: RESET HISTORY & BALANCE */}
+          {/* TAB 4: RESET HISTORY, CACHE & BALANCE */}
           {activeTab === 'reset' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-3">
-                <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
-                  <Clock className="w-4 h-4" />
-                  <span>{language === 'ar' ? 'تصفير وإعادة تعيين سجل الصفقات القديمة' : 'Clear Old Trade History & Start Fresh'}</span>
+              {/* PRIMARY ACTION: CLEAN CACHE & FULL RESET */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 via-slate-900 to-slate-950 border border-amber-500/30 space-y-3">
+                <div className="flex items-center gap-2 text-amber-400 font-bold text-xs">
+                  <RefreshCw className="w-4 h-4 text-amber-400" />
+                  <span>{language === 'ar' ? 'مسح الكاش والتخزين المؤقت وإعادة الضبط الشامل (Clean Cache & Fresh Reset)' : 'Clean All Cache & Full Reset'}</span>
                 </div>
                 <p className="text-xs text-slate-300 leading-relaxed">
                   {language === 'ar'
-                    ? 'إذا كان لديك صفقات قديمة خاسرة سجلها البوت قبل تفعيل الاستراتيجية المطورة (TP1/TP2/TP3)، يمكنك مسح كافة الصفقات السابقة وإعادة تعيين الرصيد التجريبي إلى $1,000 لبدء تقييم جديد بنسبة نجاح نقية.'
-                    : 'If you have prior losing trades logged before the Multi-Target algorithm was activated, you can wipe trade history and restart with a clean slate.'}
+                    ? 'يقوم هذا الخيار بمسح التخزين المحلي (LocalStorage) بالكامل، وإلغاء كافة البيانات القديمة المعلقة، وتصفير الصفقات والمراكز المفتوحة، وإعادة تعيين الرصيد التجريبي إلى $1,000 لبدء عمل البوت بحالة نقية وجديدة كلياً.'
+                    : 'Wipes all local storage cache, clears old positions and trades, and resets simulated paper balance back to $1,000 with clean settings.'}
+                </p>
+
+                {hasCleanedCache && (
+                  <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-bold text-center animate-fadeIn">
+                    ✓ {language === 'ar' ? 'تم مسح الكاش والتخزين المؤقت وإعادة ضبط البوت بنجاح!' : 'Cache cleared and bot reset to clean state successfully!'}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={isCleaningCache}
+                  onClick={async () => {
+                    setIsCleaningCache(true);
+                    await cleanAllCacheAndReset();
+                    setIsCleaningCache(false);
+                    setHasCleanedCache(true);
+                    setTimeout(() => setHasCleanedCache(false), 3500);
+                  }}
+                  className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/15 cursor-pointer disabled:opacity-50"
+                >
+                  {isCleaningCache ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{language === 'ar' ? 'جارٍ تنظيف الكاش...' : 'Cleaning Cache...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>{language === 'ar' ? 'مسح الكاش والتخزين المؤقت وإعادة الضبط الشامل الآن' : 'Wipe Local Cache & Reset All Now'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* SECONDARY ACTION: CLEAR TRADE HISTORY ONLY */}
+              <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-3">
+                <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
+                  <Clock className="w-4 h-4" />
+                  <span>{language === 'ar' ? 'تصفير سجل الصفقات المغلقة فقط' : 'Clear Closed Trade History Only'}</span>
+                </div>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {language === 'ar'
+                    ? 'مسح سجل الصفقات السابقة مع الإبقاء على الإعدادات الحالية والمحفظة دون تغيير.'
+                    : 'Clear trade log and history without resetting settings or wallet profiles.'}
                 </p>
 
                 {hasReset && (
                   <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-bold text-center">
-                    ✓ {language === 'ar' ? 'تم تصفير وإعادة ضبط سجل الصفقات بنجاح!' : 'Trade history and simulation balance reset successfully!'}
+                    ✓ {language === 'ar' ? 'تم تصفير سجل الصفقات بنجاح!' : 'Trade history cleared successfully!'}
                   </div>
                 )}
 
                 <button
                   type="button"
                   onClick={handleResetHistory}
-                  className="w-full py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-rose-600/20"
+                  className="w-full py-2.5 px-4 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-rose-600/15"
                 >
                   <X className="w-4 h-4" />
-                  <span>{language === 'ar' ? 'تصفير السجل وإعادة تعيين الرصيد الآن' : 'Clear History & Reset Balance Now'}</span>
+                  <span>{language === 'ar' ? 'تصفير سجل الصفقات' : 'Clear History'}</span>
                 </button>
               </div>
             </div>
@@ -1071,7 +1531,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         {/* Footer / Toast */}
         {showSavedToast && (
           <div className="bg-emerald-500 text-black font-bold text-xs py-2 px-4 text-center animate-in slide-in-from-bottom">
-            {t.settingsSaved}
+            {savedToastText || t.settingsSaved}
           </div>
         )}
       </div>

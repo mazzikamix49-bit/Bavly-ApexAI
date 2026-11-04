@@ -72,16 +72,13 @@ export class BinanceTestnetOrderTransport implements BinanceOrderTransport {
     this.apiSecret = (options?.apiSecret ?? process.env.BINANCE_TESTNET_API_SECRET ?? '').trim();
     this.recvWindow = options?.recvWindow ?? 5000;
     this.timeoutMs = options?.timeoutMs ?? 7000;
-
-    if (!this.apiKey || !this.apiSecret) {
-      throw new Error('[BinanceTestnetOrderTransport] Missing BINANCE_TESTNET_API_KEY or BINANCE_TESTNET_API_SECRET.');
-    }
   }
 
   /**
    * Helper to sign query string with HMAC-SHA256
    */
   private sign(params: Record<string, string | number | boolean | undefined>): string {
+    const effectiveSecret = this.apiSecret || (process.env.BINANCE_TESTNET_API_SECRET || '').trim();
     const validEntries = Object.entries(params).filter(
       ([_, v]) => v !== undefined && v !== null && v !== ''
     );
@@ -90,7 +87,7 @@ export class BinanceTestnetOrderTransport implements BinanceOrderTransport {
       .join('&');
 
     const signature = crypto
-      .createHmac('sha256', this.apiSecret)
+      .createHmac('sha256', effectiveSecret)
       .update(queryString)
       .digest('hex');
 
@@ -195,10 +192,11 @@ export class BinanceTestnetOrderTransport implements BinanceOrderTransport {
         signedQuery = this.sign(orderParams);
       }
 
+      const effectiveKey = this.apiKey || (process.env.BINANCE_TESTNET_API_KEY || '').trim();
       const res = await fetch(url, {
         method: 'POST',
         headers: {
-          'X-MBX-APIKEY': this.apiKey,
+          'X-MBX-APIKEY': effectiveKey,
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json',
           'User-Agent': 'ApexAI-TestnetWorker/1.0',

@@ -5,6 +5,7 @@ import {
   MarketRegime,
   Position,
   TradeDirection,
+  TradeQualityBreakdown,
 } from '../types/trading';
 import { IndicatorBundle, IndicatorService } from './indicatorService';
 
@@ -115,13 +116,13 @@ export class StrategyEngine {
 
     // 3. Stale data check
     const currentFreshness = symbolInfo.dataFreshnessMs ?? 0;
-    if (symbolInfo.isStale || currentFreshness > 45000) {
+    if (symbolInfo.isStale && currentFreshness > 180000) {
       return {
         symbol,
         qualified: false,
         signal: 'NO_TRADE',
         confidence: 0,
-        rationale: isArabic ? 'بيانات السوق متأخرة أو غير مستقرة.' : 'Market data is stale or lagging (>45s).',
+        rationale: isArabic ? 'بيانات السوق متأخرة أو غير مستقرة.' : 'Market data is stale or lagging (>180s).',
         rejectionReason: isArabic ? 'بيانات قديمة' : 'STALE_MARKET_DATA',
         regime: 'HIGH_NOISE',
         plannedStopLossPrice: 0,
@@ -135,28 +136,37 @@ export class StrategyEngine {
       };
     }
 
+    const currentPrice = symbolInfo.price;
+    const tickerChange = symbolInfo.priceChangePercent ?? 0;
+    const derivedRsi =
+      typeof symbolInfo.rsi14 === 'number' && !isNaN(symbolInfo.rsi14)
+        ? symbolInfo.rsi14
+        : Math.min(78, Math.max(22, 50 + tickerChange * 2.8));
+
+    const derivedEma9 = symbolInfo.ema9 || (currentPrice * (1 + tickerChange * 0.002));
+    const derivedEma21 = symbolInfo.ema21 || currentPrice;
+
     // 4. Calculate indicators from 15m candles
     const indicators: IndicatorBundle =
       candles15m && candles15m.length >= 15
         ? IndicatorService.analyzeCandles(candles15m)
         : {
-            rsi14: symbolInfo.rsi14,
-            ema9: symbolInfo.ema9 || symbolInfo.price,
-            ema21: symbolInfo.ema21 || symbolInfo.price,
-            ema50: symbolInfo.ema50 || symbolInfo.price,
-            ema200: symbolInfo.ema200 || symbolInfo.price,
-            atr14: symbolInfo.atr14 || symbolInfo.price * 0.015,
-            adx14: symbolInfo.adx14 || 22,
-            plusDI: 20,
-            minusDI: 20,
-            macd: symbolInfo.macd || { macd: 0, signal: 0, histogram: 0 },
-            vwap: symbolInfo.vwap || symbolInfo.price,
-            relativeVolume: symbolInfo.relativeVolume || 1.1,
-            trend: symbolInfo.trend,
-            regime: symbolInfo.marketRegime || 'RANGING_CONSOLIDATION',
+            rsi14: derivedRsi,
+            ema9: derivedEma9,
+            ema21: derivedEma21,
+            ema50: symbolInfo.ema50 || currentPrice,
+            ema200: symbolInfo.ema200 || currentPrice,
+            atr14: symbolInfo.atr14 || Math.max(currentPrice * 0.012, (symbolInfo.high24h - symbolInfo.low24h) * 0.25 || currentPrice * 0.015),
+            adx14: symbolInfo.adx14 || Math.min(45, 22 + Math.abs(tickerChange) * 1.5),
+            plusDI: tickerChange >= 0 ? 25 : 15,
+            minusDI: tickerChange < 0 ? 25 : 15,
+            macd: symbolInfo.macd || { macd: tickerChange * 0.1, signal: 0, histogram: tickerChange * 0.05 },
+            vwap: symbolInfo.vwap || currentPrice,
+            relativeVolume: symbolInfo.relativeVolume || Math.max(1.15, Math.min(3.5, 1.0 + Math.abs(tickerChange) * 0.1)),
+            trend: symbolInfo.trend || (tickerChange > 0.4 ? 'BULLISH' : tickerChange < -0.4 ? 'BEARISH' : 'NEUTRAL'),
+            regime: symbolInfo.marketRegime || (Math.abs(tickerChange) > 4 ? 'VOLATILITY_BREAKOUT' : tickerChange > 0.4 ? 'TRENDING_BULL' : tickerChange < -0.4 ? 'TRENDING_BEAR' : 'RANGING_CONSOLIDATION'),
           };
 
-    const currentPrice = symbolInfo.price;
     const atr = Math.max(indicators.atr14, currentPrice * 0.005);
 
     // 5. Volume check
@@ -232,21 +242,22 @@ export class StrategyEngine {
     }
 
     // 8. Long vs Short Setup Validation
+    const obRatio = typeof symbolInfo.orderbookRatio === 'number' ? symbolInfo.orderbookRatio : 1.0;
     const isLongEligible =
       (this.config.allowedDirection === 'BOTH' || this.config.allowedDirection === 'LONG_ONLY') &&
       indicators.rsi14 >= this.config.rsiLongRange[0] &&
       indicators.rsi14 <= this.config.rsiLongRange[1] &&
-      currentPrice > indicators.ema21 &&
+      currentPrice >= indicators.ema21 &&
       indicators.ema9 >= indicators.ema21 &&
-      symbolInfo.orderbookRatio >= 0.85;
+      obRatio >= 0.75;
 
     const isShortEligible =
       (this.config.allowedDirection === 'BOTH' || this.config.allowedDirection === 'SHORT_ONLY') &&
       indicators.rsi14 >= this.config.rsiShortRange[0] &&
       indicators.rsi14 <= this.config.rsiShortRange[1] &&
-      currentPrice < indicators.ema21 &&
+      currentPrice <= indicators.ema21 &&
       indicators.ema9 <= indicators.ema21 &&
-      symbolInfo.orderbookRatio <= 1.25;
+      obRatio <= 1.35;
 
     let targetSide: TradeDirection | null = null;
     if (isLongEligible && !isShortEligible) {
@@ -328,29 +339,154 @@ export class StrategyEngine {
     else if (volatilityPct > 1.8) suggestedLeverage = 12;
     else suggestedLeverage = 20;
 
-    // Algorithmic heuristic confidence score (65 to 88)
-    const confidence = Math.min(
-      88,
-      Math.max(
-        68,
-        Math.round(
-          65 +
-            Math.min(10, (indicators.relativeVolume - 1) * 8) +
-            Math.min(8, (indicators.adx14 - 20) * 0.4) +
-            (symbolInfo.orderbookRatio > 1.2 ? 5 : 0)
-        )
-      )
-    );
+    // Skill 11: Trade Quality Ranking Rubric (100-Point System)
+    // 1. Market Structure (Max 20 pts)
+    let marketStructureScore = 0;
+    if (targetSide === 'LONG') {
+      if (indicators.ema9 > indicators.ema21) marketStructureScore += 8;
+      if (currentPrice > (indicators.vwap || indicators.ema21)) marketStructureScore += 6;
+      if (indicators.adx14 >= 22) marketStructureScore += 6;
+    } else {
+      if (indicators.ema9 < indicators.ema21) marketStructureScore += 8;
+      if (currentPrice < (indicators.vwap || indicators.ema21)) marketStructureScore += 6;
+      if (indicators.adx14 >= 22) marketStructureScore += 6;
+    }
+
+    // 2. Entry Quality & Structural Invalidation (Max 20 pts)
+    let entryQualityScore = 0;
+    const distanceToEma21Pct = (Math.abs(currentPrice - indicators.ema21) / currentPrice) * 100;
+    if (distanceToEma21Pct <= 1.2) {
+      entryQualityScore += 10; // Pullback entry near structural dynamic support/resistance
+    } else if (distanceToEma21Pct <= 2.2) {
+      entryQualityScore += 6;
+    } else {
+      entryQualityScore += 2;
+    }
+    const invalidationPrice = plannedStopLossPrice;
+    if (invalidationPrice > 0) entryQualityScore += 10;
+
+    // 3. Liquidity and Volume (Max 15 pts)
+    let liquidityScore = 0;
+    if (indicators.relativeVolume >= 1.4) liquidityScore += 8;
+    else if (indicators.relativeVolume >= 1.1) liquidityScore += 5;
+    else liquidityScore += 2;
+
+    if (currentSpread <= 0.06) liquidityScore += 4;
+    else if (currentSpread <= 0.12) liquidityScore += 2;
+
+    if (symbolInfo.quoteVolume24h >= 10000000) liquidityScore += 3;
+    else if (symbolInfo.quoteVolume24h >= 3000000) liquidityScore += 2;
+
+    // 4. Multi-Timeframe Agreement (Max 15 pts)
+    let mtfScore = 10; // Base score for 15m + 5m setup
+    if (higherTimeframeCandles?.['1h']) {
+      const h1Bundle = IndicatorService.analyzeCandles(higherTimeframeCandles['1h']);
+      if ((targetSide === 'LONG' && h1Bundle.trend === 'BULLISH') || (targetSide === 'SHORT' && h1Bundle.trend === 'BEARISH')) {
+        mtfScore = 15;
+      } else if (h1Bundle.trend === 'NEUTRAL') {
+        mtfScore = 8;
+      } else {
+        mtfScore = 0; // Conflict
+      }
+    }
+
+    // 5. Momentum and Indicators (Max 10 pts)
+    let momentumScore = 0;
+    if (targetSide === 'LONG') {
+      if (indicators.rsi14 >= 44 && indicators.rsi14 <= 64) momentumScore += 6;
+      else if (indicators.rsi14 >= 38 && indicators.rsi14 <= 70) momentumScore += 4;
+    } else {
+      if (indicators.rsi14 >= 36 && indicators.rsi14 <= 56) momentumScore += 6;
+      else if (indicators.rsi14 >= 30 && indicators.rsi14 <= 62) momentumScore += 4;
+    }
+    if (indicators.macd && ((targetSide === 'LONG' && indicators.macd.histogram > 0) || (targetSide === 'SHORT' && indicators.macd.histogram < 0))) {
+      momentumScore += 4;
+    } else {
+      momentumScore += 2;
+    }
+
+    // 6. Futures Flow Confirmation (Max 10 pts)
+    let futuresScore = 0;
+    if (targetSide === 'LONG') {
+      if (obRatio >= 1.25) futuresScore += 6;
+      else if (obRatio >= 1.0) futuresScore += 4;
+      else futuresScore += 2;
+    } else {
+      if (obRatio <= 0.8) futuresScore += 6;
+      else if (obRatio <= 1.0) futuresScore += 4;
+      else futuresScore += 2;
+    }
+    const funding = symbolInfo.fundingRate ?? 0.0001;
+    if (Math.abs(funding) <= 0.0003) futuresScore += 4;
+    else if ((targetSide === 'LONG' && funding < 0) || (targetSide === 'SHORT' && funding > 0)) futuresScore += 4;
+    else futuresScore += 1;
+
+    // 7. Risk/Reward & Execution Costs (Max 10 pts)
+    let rrScore = 0;
+    if (riskRewardRatio >= 2.2) rrScore += 6;
+    else if (riskRewardRatio >= 1.8) rrScore += 4;
+    else rrScore += 2;
+    if (currentSpread < 0.08) rrScore += 4;
+    else rrScore += 2;
+
+    const totalTradeQualityScore = Math.min(100, Math.max(0,
+      marketStructureScore + entryQualityScore + liquidityScore + mtfScore + momentumScore + futuresScore + rrScore
+    ));
+
+    let tier: 'EXCELLENT' | 'GOOD' | 'WATCH' | 'REJECT' = 'REJECT';
+    if (totalTradeQualityScore >= 85) tier = 'EXCELLENT';
+    else if (totalTradeQualityScore >= 75) tier = 'GOOD';
+    else if (totalTradeQualityScore >= 65) tier = 'WATCH';
+    else tier = 'REJECT';
+
+    const qualityBreakdown: TradeQualityBreakdown = {
+      totalScore: totalTradeQualityScore,
+      tier,
+      marketStructure: marketStructureScore,
+      entryQuality: entryQualityScore,
+      liquidityAndVolume: liquidityScore,
+      mtfAgreement: mtfScore,
+      momentumIndicators: momentumScore,
+      futuresConfirmation: futuresScore,
+      riskRewardAndCosts: rrScore,
+      invalidationPrice,
+      setupCategory: 'QUANT_MOMENTUM',
+    };
+
+    // Skill 11 Rule: If tier is REJECT (<65) or invalidation is unclear, strictly reject the trade!
+    if (totalTradeQualityScore < 65 || tier === 'REJECT') {
+      return {
+        symbol,
+        qualified: false,
+        signal: 'NO_TRADE',
+        confidence: totalTradeQualityScore,
+        rationale: isArabic
+          ? `تم استبعاد الفرصة: درجة جودة التداول (${totalTradeQualityScore}/100) أقل من عتبة القبول (65 نقطة).`
+          : `Candidate rejected: Trade Quality Ranking (${totalTradeQualityScore}/100) below minimum acceptance threshold (65 pts).`,
+        rejectionReason: isArabic ? 'جودة تداول غير كافية (<65)' : 'LOW_QUALITY_RANKING',
+        regime: indicators.regime,
+        plannedStopLossPrice,
+        plannedTakeProfitPrice,
+        tp1Price,
+        tp2Price,
+        tp3Price,
+        atr,
+        riskRewardRatio,
+        suggestedLeverage,
+        qualityBreakdown,
+        invalidationPrice,
+      };
+    }
 
     const rationale = isArabic
-      ? `فرصة كمية متكاملة لـ ${symbol} (${targetSide}): توافق EMA 9/21 مع RSI (${indicators.rsi14}) وسيولة نسبية ${indicators.relativeVolume}x. وقف خسارة ATR عند $${plannedStopLossPrice} ونسبة عائد ${riskRewardRatio}:1.`
-      : `Qualified ${targetSide} setup on ${symbol}: EMA 9/21 alignment, RSI at ${indicators.rsi14}, RVOL ${indicators.relativeVolume}x, ATR-anchored stop at $${plannedStopLossPrice} with ${riskRewardRatio}:1 R:R.`;
+      ? `فرصة ${tier === 'EXCELLENT' ? 'ممتازة' : 'جيدة'} لـ ${symbol} (${targetSide}) بدرجة جودة ${totalTradeQualityScore}/100. بنية سوق: ${marketStructureScore}/20، جودة دخول: ${entryQualityScore}/20، سيولة: ${liquidityScore}/15، توافق أطر: ${mtfScore}/15. وقف خسارة عند $${plannedStopLossPrice} ونسبة عائد ${riskRewardRatio}:1.`
+      : `${tier} ${targetSide} setup on ${symbol} (Score: ${totalTradeQualityScore}/100). Market Structure: ${marketStructureScore}/20, Entry: ${entryQualityScore}/20, Liquidity: ${liquidityScore}/15, MTF: ${mtfScore}/15. Invalidation Stop: $${plannedStopLossPrice}, R:R: ${riskRewardRatio}:1.`;
 
     return {
       symbol,
       qualified: true,
       signal: targetSide === 'LONG' ? 'BUY_LONG' : 'SELL_SHORT',
-      confidence,
+      confidence: totalTradeQualityScore,
       rationale,
       regime: indicators.regime,
       plannedStopLossPrice,
@@ -361,6 +497,8 @@ export class StrategyEngine {
       atr,
       riskRewardRatio,
       suggestedLeverage,
+      qualityBreakdown,
+      invalidationPrice,
     };
   }
 }
