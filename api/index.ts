@@ -1046,6 +1046,10 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
     }
   }
   params.positionSide = resolvedPositionSide;
+  // If in Dual/Hedge Mode (positionSide is LONG or SHORT), Binance strictly rejects 'reduceOnly' with error -4059.
+  if (resolvedPositionSide !== 'BOTH') {
+    delete params.reduceOnly;
+  }
 
   const queryString = new URLSearchParams(params).toString();
   const signature = signQuery(queryString, apiSecret);
@@ -1419,6 +1423,264 @@ apiRouter.post('/binance/cancelAllOpenOrders', async (req: Request, res: Respons
     }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 11c. Binance Atomic Position Close (Cancels open SL/TP orders, fetches exact position amount, and market closes)
+apiRouter.post('/binance/close-position', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const { symbol } = req.body;
+  const credentials = getEffectiveCredentials(req, isTestnet);
+  if (!credentials) {
+    return res.status(400).json({ success: false, error: 'Binance credentials not configured on server.' });
+  }
+  if (!symbol) {
+    return res.status(400).json({ success: false, error: 'Missing required symbol parameter' });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet, true, req);
+
+  try {
+    // Step 1: Cleanly cancel all pending protective/conditional orders (SL & TP) first so they do not block closing
+    try {
+      const cancelTs = Date.now();
+      const cancelQs = `symbol=${symbol}&timestamp=${cancelTs}&recvWindow=60000`;
+      const cancelSig = signQuery(cancelQs, apiSecret);
+      await fetch(`${baseUrl}/fapi/v1/allOpenOrders?${cancelQs}&signature=${cancelSig}`, {
+        method: 'DELETE',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+    } catch (cancelErr) {
+      console.warn(`[ClosePosition] Warning: Cancel orders failed for ${symbol}:`, cancelErr);
+    }
+
+    // Step 2: Fetch actual real-time position from Binance to get exact current position amount
+    const posTs = Date.now();
+    const posQs = `symbol=${symbol}&timestamp=${posTs}&recvWindow=60000`;
+    const posSig = signQuery(posQs, apiSecret);
+    const posRes = await fetch(`${baseUrl}/fapi/v2/positionRisk?${posQs}&signature=${posSig}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const posData = await posRes.json();
+    if (!posRes.ok || !Array.isArray(posData)) {
+      return res.status(400).json({ success: false, error: posData?.msg || 'Failed to fetch positionRisk from Binance' });
+    }
+
+    // Find positions for this symbol with open amount
+    const openPositions = posData.filter((p: any) => p.symbol === symbol && Math.abs(parseFloat(p.positionAmt || '0')) > 0);
+    if (openPositions.length === 0) {
+      return res.json({ success: true, alreadyClosed: true, message: `Position ${symbol} is already closed on Binance.` });
+    }
+
+    const filterInfo = await getSymbolFilterInfo(symbol, isTestnet);
+    const isDual = await getAccountDualSidePosition(apiKey, apiSecret, baseUrl);
+    const closeResults: any[] = [];
+
+    for (const openPos of openPositions) {
+      const positionAmt = parseFloat(openPos.positionAmt);
+      const isLong = positionAmt > 0;
+      const closeSide = isLong ? 'SELL' : 'BUY';
+      const absQty = Math.abs(positionAmt);
+      const formattedQty = formatQuantityByFilter(absQty, filterInfo);
+
+      let positionSide = 'BOTH';
+      if (isDual) {
+        positionSide = isLong ? 'LONG' : 'SHORT';
+      }
+
+      const orderParams: Record<string, string> = {
+        symbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: formattedQty,
+        timestamp: Date.now().toString(),
+        recvWindow: '60000',
+        positionSide,
+      };
+
+      if (!isDual) {
+        orderParams.reduceOnly = 'true';
+      }
+
+      let orderQs = new URLSearchParams(orderParams).toString();
+      let orderSig = signQuery(orderQs, apiSecret);
+
+      let orderRes = await fetch(`${baseUrl}/fapi/v1/order?${orderQs}&signature=${orderSig}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      let orderData = await orderRes.json();
+
+      // Auto-recover from -4061 (Order's position side does not match user's setting)
+      if (!orderRes.ok && orderData.code === -4061) {
+        orderParams.positionSide = positionSide === 'BOTH' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
+        if (orderParams.positionSide === 'BOTH') {
+          orderParams.reduceOnly = 'true';
+        } else {
+          delete orderParams.reduceOnly;
+        }
+        orderQs = new URLSearchParams(orderParams).toString();
+        orderSig = signQuery(orderQs, apiSecret);
+        orderRes = await fetch(`${baseUrl}/fapi/v1/order?${orderQs}&signature=${orderSig}`, {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+        orderData = await orderRes.json();
+      }
+
+      if (orderRes.ok) {
+        closeResults.push({ symbol, side: closeSide, quantity: formattedQty, success: true, order: orderData });
+      } else {
+        closeResults.push({ symbol, side: closeSide, quantity: formattedQty, success: false, error: orderData?.msg || 'Close order failed' });
+      }
+    }
+
+    const allSuccessful = closeResults.length > 0 && closeResults.every((r) => r.success);
+    if (allSuccessful) {
+      return res.json({ success: true, symbol, closeResults });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: closeResults.map((r) => r.error).filter(Boolean).join('; ') || 'Failed to close position on Binance',
+        closeResults,
+      });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 11d. Binance Atomic Close All Positions (Emergency Kill Switch / Close All)
+apiRouter.post('/binance/close-all', async (req: Request, res: Response) => {
+  const isTestnet = resolveIsTestnet(req.body.isTestnet);
+  if (!isTestnet && !isProductionTradingAllowed(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'PRODUCTION_TRADING_DISABLED: Binance Production trading is strictly blocked because ALLOW_PRODUCTION_TRADING is false.',
+    });
+  }
+
+  const credentials = getEffectiveCredentials(req, isTestnet);
+  if (!credentials) {
+    return res.status(400).json({ success: false, error: 'Binance credentials not configured on server.' });
+  }
+
+  const { apiKey, apiSecret } = credentials;
+  const baseUrl = getBinanceBaseUrl(isTestnet, true, req);
+
+  try {
+    // Step 1: Query all positions from Binance
+    const posTs = Date.now();
+    const posQs = `timestamp=${posTs}&recvWindow=60000`;
+    const posSig = signQuery(posQs, apiSecret);
+    const posRes = await fetch(`${baseUrl}/fapi/v2/positionRisk?${posQs}&signature=${posSig}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    const posData = await posRes.json();
+    if (!posRes.ok || !Array.isArray(posData)) {
+      return res.status(400).json({ success: false, error: posData?.msg || 'Failed to fetch positionRisk from Binance' });
+    }
+
+    const activePositions = posData.filter((p: any) => Math.abs(parseFloat(p.positionAmt || '0')) > 0);
+    if (activePositions.length === 0) {
+      return res.json({ success: true, closedCount: 0, message: 'No open positions found on Binance.' });
+    }
+
+    const isDual = await getAccountDualSidePosition(apiKey, apiSecret, baseUrl);
+    const closedSymbols: string[] = [];
+    const errors: string[] = [];
+
+    for (const openPos of activePositions) {
+      const symbol = openPos.symbol;
+      const positionAmt = parseFloat(openPos.positionAmt);
+      const isLong = positionAmt > 0;
+      const closeSide = isLong ? 'SELL' : 'BUY';
+      const absQty = Math.abs(positionAmt);
+
+      // Cancel open orders first
+      try {
+        const cancelTs = Date.now();
+        const cancelQs = `symbol=${symbol}&timestamp=${cancelTs}&recvWindow=60000`;
+        const cancelSig = signQuery(cancelQs, apiSecret);
+        await fetch(`${baseUrl}/fapi/v1/allOpenOrders?${cancelQs}&signature=${cancelSig}`, {
+          method: 'DELETE',
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+      } catch (e) {
+        console.warn(`Cancel orders for ${symbol} failed:`, e);
+      }
+
+      const filterInfo = await getSymbolFilterInfo(symbol, isTestnet);
+      const formattedQty = formatQuantityByFilter(absQty, filterInfo);
+
+      let positionSide = 'BOTH';
+      if (isDual) {
+        positionSide = isLong ? 'LONG' : 'SHORT';
+      }
+
+      const orderParams: Record<string, string> = {
+        symbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: formattedQty,
+        timestamp: Date.now().toString(),
+        recvWindow: '60000',
+        positionSide,
+      };
+
+      if (!isDual) {
+        orderParams.reduceOnly = 'true';
+      }
+
+      let orderQs = new URLSearchParams(orderParams).toString();
+      let orderSig = signQuery(orderQs, apiSecret);
+
+      let orderRes = await fetch(`${baseUrl}/fapi/v1/order?${orderQs}&signature=${orderSig}`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      let orderData = await orderRes.json();
+
+      // Retry for -4061
+      if (!orderRes.ok && orderData.code === -4061) {
+        orderParams.positionSide = positionSide === 'BOTH' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
+        if (orderParams.positionSide === 'BOTH') {
+          orderParams.reduceOnly = 'true';
+        } else {
+          delete orderParams.reduceOnly;
+        }
+        orderQs = new URLSearchParams(orderParams).toString();
+        orderSig = signQuery(orderQs, apiSecret);
+        orderRes = await fetch(`${baseUrl}/fapi/v1/order?${orderQs}&signature=${orderSig}`, {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+        orderData = await orderRes.json();
+      }
+
+      if (orderRes.ok) {
+        closedSymbols.push(symbol);
+      } else {
+        errors.push(`${symbol}: ${orderData?.msg || 'Failed'}`);
+      }
+    }
+
+    return res.json({
+      success: errors.length === 0 || closedSymbols.length > 0,
+      closedCount: closedSymbols.length,
+      closedSymbols,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

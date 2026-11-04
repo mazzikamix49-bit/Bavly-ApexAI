@@ -871,4 +871,55 @@ export class BinanceService {
       backendProxy: proxyResult,
     };
   }
+
+  static async closePosition(
+    credentials: BinanceCredentials,
+    symbol: string
+  ): Promise<{
+    success: boolean;
+    alreadyClosed?: boolean;
+    error?: string;
+    closeResults?: any[];
+  }> {
+    try {
+      const res = await fetch('/api/binance/close-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol,
+          isTestnet: credentials.isTestnet,
+          apiKey: credentials.apiKey,
+          apiSecret: credentials.apiSecret,
+        }),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async closeAllPositions(
+    credentials: BinanceCredentials
+  ): Promise<{
+    success: boolean;
+    closedCount?: number;
+    closedSymbols?: string[];
+    error?: string;
+    errors?: string[];
+  }> {
+    try {
+      const res = await fetch('/api/binance/close-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          isTestnet: credentials.isTestnet,
+          apiKey: credentials.apiKey,
+          apiSecret: credentials.apiSecret,
+        }),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
 }

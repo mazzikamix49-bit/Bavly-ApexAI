@@ -531,6 +531,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const telegramSettingsRef = useRef(telegramSettings);
   telegramSettingsRef.current = telegramSettings;
 
+  // Intelligent Pacing & Execution Cooldown Refs
+  const botStartedAtRef = useRef<number>(Date.now());
+  const lastTradeOpenedAtRef = useRef<number>(0);
+  const lastTradedSymbolsRef = useRef<Map<string, number>>(new Map());
+
   // Persist state updates
   useEffect(() => {
     localStorage.setItem('apex_active_positions', JSON.stringify(positions));
@@ -623,6 +628,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // 2. Synchronous immediate state and ref update
       setBotRunningState(true);
       botRunningRef.current = true;
+      botStartedAtRef.current = Date.now();
+      lastTradeOpenedAtRef.current = Date.now();
       localStorage.setItem('apex_bot_running', 'true');
 
       // 3. Notify backend worker
@@ -636,10 +643,10 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       addToast({
         type: 'INFO',
-        title: isAr ? '▶️ تم تشغيل البوت 24/7 بنجاح' : '▶️ 24/7 Bot Activated',
+        title: isAr ? '▶️ تم تشغيل البوت الذكي 24/7' : '▶️ Smart ApexAI Bot Activated',
         message: isAr
-          ? `المحرك يعمل الآن بنجاح على ${credentialsRef.current.isTestnet ? 'باينانس ديمو (Testnet)' : 'باينانس لايف (حقيقي)'} لمسح السوق وفتح الصفقات وإدارتها بالذكاء الاصطناعي.`
-          : `ApexAI Bot is now running 24/7 on ${credentialsRef.current.isTestnet ? 'Binance Demo' : 'Binance Live'}.`,
+          ? `بدأ التحليل الذكي ومسح أزواج السوق لاقتناص أقوى الفرص المؤكدة (Grade A). لن يتم التسرع في الدخول؛ الصفقات تُفتح بتأنٍ عند استيفاء أعلى درجات الزخم وتأكيدات السيولة.`
+          : `Scanning and analyzing markets for Grade A confirmed opportunities. Execution is paced and highly selective for top-probability setups.`,
       });
     } else {
       // 1. Synchronous immediate freeze of trading loop
@@ -1187,21 +1194,16 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // Real Binance close order if in Binance execution mode
     const hasBinance = credentialsRef.current.isValidated && Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret);
     if ((tradingModeRef.current === 'real' || hasBinance) && (target.isRealOrder || hasBinance)) {
-      try {
-        await BinanceService.placeOrder(
-          credentialsRef.current,
-          target.symbol,
-          target.side === 'LONG' ? 'SELL' : 'BUY',
-          target.quantity,
-          true
-        );
-      } catch (err) {
-        console.error('Failed to close real Binance order:', err);
-      }
-      try {
-        await BinanceService.cancelAllOpenOrders(credentialsRef.current, target.symbol);
-      } catch (err) {
-        console.error('Failed to cleanup open orders on Binance:', err);
+      const closeRes = await BinanceService.closePosition(credentialsRef.current, target.symbol);
+      if (!closeRes.success && !closeRes.alreadyClosed) {
+        console.error(`Failed to close position ${target.symbol} on Binance:`, closeRes.error);
+        const isArClose = languageRef.current === 'ar';
+        addToast({
+          type: 'ERROR',
+          title: isArClose ? `❌ تعذر إغلاق ${target.symbol} على باينانس` : `❌ Failed to close ${target.symbol} on Binance`,
+          message: closeRes.error || (isArClose ? 'رفضت منصة باينانس تنفيذ أمر الإغلاق. يُرجى مراجعة الاتصال أو إغلاقها يدوياً.' : 'Binance rejected the close order. Check connection or close manually.'),
+        });
+        return false;
       }
     }
 
@@ -1301,9 +1303,27 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const closeAllPositions = async () => {
+    const isAr = languageRef.current === 'ar';
     const list = [...positionsRef.current];
     if (list.length === 0) return;
 
+    const hasBinance = credentialsRef.current.isValidated && Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret);
+
+    if (tradingModeRef.current === 'real' || hasBinance) {
+      // 1. Direct atomic liquidation of all positions on Binance API
+      const binanceRes = await BinanceService.closeAllPositions(credentialsRef.current);
+      if (!binanceRes.success && (!binanceRes.closedSymbols || binanceRes.closedSymbols.length === 0)) {
+        addToast({
+          type: 'ERROR',
+          title: isAr ? '❌ تعذر إغلاق جميع الصفقات على باينانس' : '❌ Failed to Close All Positions on Binance',
+          message: binanceRes.error || (binanceRes.errors && binanceRes.errors.join('; ')) || 'Binance rejected close-all command.',
+        });
+        await refreshAccountData();
+        return;
+      }
+    }
+
+    // 2. Close positions locally and record closed trades
     let closedCount = 0;
     for (const pos of list) {
       try {
@@ -1314,13 +1334,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }
 
-    const isAr = languageRef.current === 'ar';
+    // 3. Immediately refresh account data from Binance to guarantee 100% sync
+    if (tradingModeRef.current === 'real' || hasBinance) {
+      await refreshAccountData();
+    }
+
     addToast({
       type: 'INFO',
-      title: isAr ? '⚡ تم إغلاق جميع الصفقات بنجاح' : '⚡ All Positions Closed',
+      title: isAr ? '⚡ تم إغلاق وتصفية جميع الصفقات بنجاح' : '⚡ All Positions Closed',
       message: isAr
-        ? `تم إغلاق ${closedCount} صفقات مفتوحة وتأمين رأس المال وتحديث الهامش المتاح بالكامل.`
-        : `Successfully closed ${closedCount} open positions and updated available margin.`,
+        ? `تم إغلاق وتصفية جميع الصفقات (${closedCount} صفقات) في حساب باينانس بالكامل وتأمين رأس المال وتحديث الرصيد.`
+        : `Successfully closed and liquidated all positions (${closedCount} trades) directly on Binance and freed margin.`,
     });
   };
 
@@ -1955,14 +1979,46 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
 
+      const now = Date.now();
+
+      // Intelligent Pacing 1: Initial market reconnaissance warm-up window (15 seconds after starting)
+      // Allows price feeds, orderbooks, and multi-timeframe indicators to stabilize before opening any trade
+      if (now - botStartedAtRef.current < 15000) {
+        return;
+      }
+
+      // Intelligent Pacing 2: Execution spacing cooldown (at least 45 seconds between automated trade entries)
+      // Completely stops the bot from opening 3 or 4 trades simultaneously in seconds
+      if (now - lastTradeOpenedAtRef.current < 45000) {
+        return;
+      }
+
       if (
         settingsRef.current.autoTradingEnabled &&
         positionsRef.current.length < settingsRef.current.maxConcurrentPositions &&
         marketPairsRef.current.length > 0 &&
         !settingsRef.current.killSwitchActive
       ) {
-        // Find top candidate that satisfies strategy rules
+        const activeSymbols = new Set(positionsRef.current.map((p) => p.symbol));
+
+        // Evaluate ALL candidate symbols across the market to rank them by 100-point rubric
+        const candidates: Array<{
+          pair: FuturesSymbolInfo;
+          evalRes: ReturnType<typeof strategyEngine.evaluateCandidate>;
+          score: number;
+        }> = [];
+
         for (const pair of marketPairsRef.current) {
+          // Do not open duplicate positions for the same symbol
+          if (activeSymbols.has(pair.symbol)) continue;
+
+          // Prevent immediately churning a pair closed within the last 3 minutes
+          const lastTraded = lastTradedSymbolsRef.current.get(pair.symbol) || 0;
+          if (now - lastTraded < 180000) continue;
+
+          // Skip high-spread noise pairs
+          if (pair.spreadPercent && pair.spreadPercent > settingsRef.current.maxSpreadPercent) continue;
+
           const evalRes = strategyEngine.evaluateCandidate(
             pair,
             [],
@@ -1971,10 +2027,35 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             languageRef.current
           );
 
-          if (evalRes.qualified && evalRes.signal !== 'NO_TRADE') {
-            const side: TradeDirection = evalRes.signal === 'BUY_LONG' ? 'LONG' : 'SHORT';
-            await openPosition(pair.symbol, side, evalRes.rationale);
-            break; // Open one at a time per scan tick
+          // STRICT GRADE A INTELLIGENCE FILTER:
+          // 1. Must qualify with an explicit BUY_LONG or SELL_SHORT setup
+          // 2. High confidence (>= settings minAiConfidence, default 75-80%)
+          // 3. Trade quality tier must be EXCELLENT (85-100) or high GOOD (78-84)
+          // 4. Strong risk-to-reward ratio (>= 1.5)
+          const qualityScore = evalRes.qualityBreakdown?.totalScore || evalRes.confidence || 0;
+          const isHighGrade = qualityScore >= 78 && (evalRes.qualityBreakdown?.tier === 'EXCELLENT' || evalRes.qualityBreakdown?.tier === 'GOOD');
+
+          if (
+            evalRes.qualified &&
+            evalRes.signal !== 'NO_TRADE' &&
+            evalRes.confidence >= settingsRef.current.minAiConfidence &&
+            isHighGrade &&
+            evalRes.riskRewardRatio >= 1.5
+          ) {
+            candidates.push({ pair, evalRes, score: qualityScore });
+          }
+        }
+
+        // Sort candidates so the single #1 highest-score Grade A setup is selected first!
+        candidates.sort((a, b) => b.score - a.score);
+
+        if (candidates.length > 0) {
+          const topCandidate = candidates[0];
+          const side: TradeDirection = topCandidate.evalRes.signal === 'BUY_LONG' ? 'LONG' : 'SHORT';
+          const success = await openPosition(topCandidate.pair.symbol, side, topCandidate.evalRes.rationale);
+          if (success) {
+            lastTradeOpenedAtRef.current = Date.now();
+            lastTradedSymbolsRef.current.set(topCandidate.pair.symbol, Date.now());
           }
         }
       }
