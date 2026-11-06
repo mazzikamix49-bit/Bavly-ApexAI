@@ -313,7 +313,7 @@ export class BinanceService {
             minQty,
             stepSize: minQty,
             tickSize: 1 / Math.pow(10, pricePrecision),
-            minNotional: 5,
+            minNotional: t.symbol === 'BTCUSDT' ? 50 : 20,
             price,
             markPrice: price,
             priceChangePercent: change,

@@ -438,6 +438,50 @@ export interface AILearningState {
   }>;
 }
 
+// -------------------------------------------------------------------------
+// Trader-Skill Integration Types (Jakeschincariol/trader-skill)
+// -------------------------------------------------------------------------
+
+export type TraderSkillVerdict = 'PASS' | 'BLOCK';
+
+export interface TraderSkillPreTradeRiskVerdict {
+  verdict: TraderSkillVerdict;
+  symbol: string;
+  side: TradeDirection;
+  reasons: string[];
+  fingerprint: string;
+  checkedAt: number;
+  cashBufferKept: number;
+  maxPositionCapPct: number;
+  requestedAmountUsd: number;
+}
+
+export interface TraderSkillScoreBreakdown {
+  screenerRankScore: number; // 0-100 (trader-screener)
+  budgetSizingScore: number; // 0-100 (trader-budget)
+  riskComplianceScore: number; // 0-100 (trader-risk)
+  newsSentimentScore: number; // -100 to +100 (trader-news)
+  smartMoneyScore: number; // 0-100 (trader-pelosi & trader-copycat whale tracking)
+  analystEvScore: number; // 0-100 (trader-analyst)
+  compositeTraderSkillScore: number; // 0-100 (weighted 95% reliance)
+  relianceWeight: number; // 95%
+  isBlockedByCatalyst: boolean;
+  catalystAlert?: string;
+  smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'NEUTRAL';
+}
+
+export interface TraderSkillModuleStatus {
+  id: string;
+  name: string;
+  nameAr: string;
+  category: string;
+  status: 'ACTIVE' | 'AUDITING' | 'ALERT_TRIGGERED';
+  descriptionAr: string;
+  descriptionEn: string;
+  lastExecutionTime: number;
+}
+
+
 export interface BacktestResult {
   symbol: string;
   interval: string;

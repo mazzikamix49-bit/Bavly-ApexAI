@@ -293,28 +293,33 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
             </div>
 
             {/* Binance API Connection Status */}
-            <button
-              onClick={onOpenSettings}
-              className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                apiStatus === 'connected'
-                  ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300 hover:border-emerald-500/50'
-                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
-              }`}
-            >
-              <ShieldCheck
-                className={`w-3.5 h-3.5 ${
-                  apiStatus === 'connected' ? 'text-emerald-400' : 'text-slate-500'
-                }`}
-              />
-              <span>
-                {apiStatus === 'connected' ? t.apiConnected : t.apiDisconnected}
-              </span>
-              {credentials.isTestnet && (
-                <span className="bg-amber-400/20 text-amber-300 text-[10px] px-1 rounded">
-                  Testnet
-                </span>
-              )}
-            </button>
+            {(() => {
+              const isConnected = apiStatus === 'connected' || credentials.isValidated || Boolean(credentials.apiKey && credentials.apiSecret);
+              return (
+                <button
+                  onClick={onOpenSettings}
+                  className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                    isConnected
+                      ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300 hover:border-emerald-500/50'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <ShieldCheck
+                    className={`w-3.5 h-3.5 ${
+                      isConnected ? 'text-emerald-400' : 'text-slate-500'
+                    }`}
+                  />
+                  <span>
+                    {isConnected ? t.apiConnected : t.apiDisconnected}
+                  </span>
+                  {credentials.isTestnet && (
+                    <span className="bg-amber-400/20 text-amber-300 text-[10px] px-1 rounded">
+                      Testnet
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
 
             {/* Language Switcher */}
             <button

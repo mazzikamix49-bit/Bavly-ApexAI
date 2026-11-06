@@ -27,6 +27,8 @@ interface GlobalRiskExposureGaugeProps {
 
 export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = ({ compact = false }) => {
   const { balance, positions, settings, closeAllPositions, language } = useTrading();
+  const [showDeRiskConfirm, setShowDeRiskConfirm] = useState(false);
+  const [isExecutingDeRisk, setIsExecutingDeRisk] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('apex_gauge_collapsed') === 'true';
   });
@@ -186,11 +188,11 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
 
           {metrics.lockedPercentage > 70 && positions.length > 0 && (
             <button
-              onClick={() => closeAllPositions()}
+              onClick={() => setShowDeRiskConfirm(true)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 text-xs font-bold transition animate-pulse cursor-pointer"
             >
               <ShieldAlert className="w-3.5 h-3.5" />
-              <span>{isArabic ? 'تقليص المخاطر فوراً' : 'De-Risk Now'}</span>
+              <span>{isArabic ? 'تحرير الهامش لتقليل المخاطر' : 'De-Risk / Release Margin'}</span>
             </button>
           )}
 
@@ -451,6 +453,71 @@ export const GlobalRiskExposureGauge: React.FC<GlobalRiskExposureGaugeProps> = (
           </div>
         </div>
       </div>
+    )}
+
+      {/* De-Risk Margin Release Confirmation Modal */}
+      {showDeRiskConfirm && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-[#121824] border border-rose-500/50 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                <ShieldAlert className="w-6 h-6 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  {isArabic ? 'تأكيد تحرير الهامش وتقليص المخاطر' : 'Confirm Margin Release & De-Risk'}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {isArabic
+                    ? 'سيتم تصفية وإغلاق الصفقات المفتوحة فوراً لتحرير رأس المال وحماية المحفظة.'
+                    : 'Active positions will be liquidated to release margin and safeguard equity.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs space-y-1.5 font-mono">
+              <div className="flex justify-between text-slate-400">
+                <span>{isArabic ? 'عدد الصفقات المفتوحة:' : 'Active Positions:'}</span>
+                <span className="text-white font-bold">{positions.length}</span>
+              </div>
+              <div className="flex justify-between text-slate-400">
+                <span>{isArabic ? 'الهامش المحجوز حالياً:' : 'Currently Locked Margin:'}</span>
+                <span className="text-amber-400 font-bold">${metrics.lockedMargin.toFixed(2)} USDT</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowDeRiskConfirm(false)}
+                disabled={isExecutingDeRisk}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
+              >
+                {isArabic ? 'إلغاء الأمر' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsExecutingDeRisk(true);
+                  try {
+                    await closeAllPositions();
+                  } finally {
+                    setIsExecutingDeRisk(false);
+                    setShowDeRiskConfirm(false);
+                  }
+                }}
+                disabled={isExecutingDeRisk}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-900/40 transition flex items-center gap-1.5 cursor-pointer"
+              >
+                {isExecutingDeRisk ? (
+                  <span>{isArabic ? 'جارٍ تحرير الهامش...' : 'De-Risking...'}</span>
+                ) : (
+                  <span>{isArabic ? 'نعم، تحرير الهامش وإغلاق الكل' : 'Confirm & Release Margin'}</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

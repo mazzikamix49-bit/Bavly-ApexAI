@@ -8,6 +8,7 @@ import {
   TradeQualityBreakdown,
 } from '../types/trading';
 import { IndicatorBundle, IndicatorService } from './indicatorService';
+import { TraderSkillMasterEngine } from './traderSkillEngine';
 
 export interface StrategyConfig {
   minRiskRewardRatio: number; // e.g. 1.8
@@ -433,14 +434,62 @@ export class StrategyEngine {
       marketStructureScore + entryQualityScore + liquidityScore + mtfScore + momentumScore + futuresScore + rrScore
     ));
 
+    // Trader-Skill Suite Evaluation (11 Skills Pack - 95% Primary Decision Authority)
+    const traderSkillScore = TraderSkillMasterEngine.evaluateCandidateWithTraderSkill(
+      symbolInfo,
+      targetSide,
+      plannedStopLossPrice,
+      plannedTakeProfitPrice,
+      {
+        rsi14: indicators.rsi14,
+        adx14: indicators.adx14,
+        relativeVolume: indicators.relativeVolume,
+        atr14: indicators.atr14,
+        orderbookRatio: obRatio,
+        fundingRate: symbolInfo.fundingRate,
+      }
+    );
+
+    // Instant Catalyst Red-Flag Veto (trader-news rule)
+    if (traderSkillScore.isBlockedByCatalyst) {
+      return {
+        symbol,
+        qualified: false,
+        signal: 'NO_TRADE',
+        confidence: 0,
+        rationale: isArabic
+          ? `⛔ تم استبعاد العملة بواسطة محرك الأخبار والمحفزات (Trader-News): تحذير عالي المخاطر.`
+          : `⛔ Excluded by Trader-News Catalyst Guard: High-risk negative catalyst detected.`,
+        rejectionReason: 'TRADER_NEWS_CATALYST_VETO',
+        regime: indicators.regime,
+        plannedStopLossPrice: 0,
+        plannedTakeProfitPrice: 0,
+        tp1Price: 0,
+        tp2Price: 0,
+        tp3Price: 0,
+        atr: 0,
+        riskRewardRatio: 0,
+        suggestedLeverage: 10,
+      };
+    }
+
+    // Blend: 95% Trader-Skill (Screener + Smart Money + Risk + Analyst + News) + 5% Base Technical
+    const compositeDecisionScore = Math.min(
+      100,
+      Math.max(
+        0,
+        Math.round(traderSkillScore.compositeTraderSkillScore * 0.95 + totalTradeQualityScore * 0.05)
+      )
+    );
+
     let tier: 'EXCELLENT' | 'GOOD' | 'WATCH' | 'REJECT' = 'REJECT';
-    if (totalTradeQualityScore >= 85) tier = 'EXCELLENT';
-    else if (totalTradeQualityScore >= 75) tier = 'GOOD';
-    else if (totalTradeQualityScore >= 65) tier = 'WATCH';
+    if (compositeDecisionScore >= 80) tier = 'EXCELLENT';
+    else if (compositeDecisionScore >= 70) tier = 'GOOD';
+    else if (compositeDecisionScore >= 60) tier = 'WATCH';
     else tier = 'REJECT';
 
     const qualityBreakdown: TradeQualityBreakdown = {
-      totalScore: totalTradeQualityScore,
+      totalScore: compositeDecisionScore,
       tier,
       marketStructure: marketStructureScore,
       entryQuality: entryQualityScore,
@@ -453,17 +502,17 @@ export class StrategyEngine {
       setupCategory: 'QUANT_MOMENTUM',
     };
 
-    // Skill 11 Rule: If tier is REJECT (<65) or invalidation is unclear, strictly reject the trade!
-    if (totalTradeQualityScore < 65 || tier === 'REJECT') {
+    // Strict Trader-Skill Acceptance Gate (Must achieve >= 65 score)
+    if (compositeDecisionScore < 65 || tier === 'REJECT') {
       return {
         symbol,
         qualified: false,
         signal: 'NO_TRADE',
-        confidence: totalTradeQualityScore,
+        confidence: compositeDecisionScore,
         rationale: isArabic
-          ? `تم استبعاد الفرصة: درجة جودة التداول (${totalTradeQualityScore}/100) أقل من عتبة القبول (65 نقطة).`
-          : `Candidate rejected: Trade Quality Ranking (${totalTradeQualityScore}/100) below minimum acceptance threshold (65 pts).`,
-        rejectionReason: isArabic ? 'جودة تداول غير كافية (<65)' : 'LOW_QUALITY_RANKING',
+          ? `تم استبعاد الفرصة: درجة تقييم Trader-Skill (${compositeDecisionScore}/100) أقل من عتبة القبول الصارمة (65 نقطة).`
+          : `Candidate rejected: Trader-Skill Score (${compositeDecisionScore}/100) below minimum acceptance threshold (65 pts).`,
+        rejectionReason: isArabic ? 'جودة Trader-Skill غير كافية (<65)' : 'LOW_TRADER_SKILL_SCORE',
         regime: indicators.regime,
         plannedStopLossPrice,
         plannedTakeProfitPrice,
@@ -478,15 +527,20 @@ export class StrategyEngine {
       };
     }
 
+    const smartMoneyTag =
+      traderSkillScore.smartMoneySignal === 'ACCUMULATION'
+        ? (isArabic ? 'تراكم حيتان 🐋' : 'Whale Accumulation 🐋')
+        : (isArabic ? 'سيولة متوازنة ⚖️' : 'Balanced Flow ⚖️');
+
     const rationale = isArabic
-      ? `فرصة ${tier === 'EXCELLENT' ? 'ممتازة' : 'جيدة'} لـ ${symbol} (${targetSide}) بدرجة جودة ${totalTradeQualityScore}/100. بنية سوق: ${marketStructureScore}/20، جودة دخول: ${entryQualityScore}/20، سيولة: ${liquidityScore}/15، توافق أطر: ${mtfScore}/15. وقف خسارة عند $${plannedStopLossPrice} ونسبة عائد ${riskRewardRatio}:1.`
-      : `${tier} ${targetSide} setup on ${symbol} (Score: ${totalTradeQualityScore}/100). Market Structure: ${marketStructureScore}/20, Entry: ${entryQualityScore}/20, Liquidity: ${liquidityScore}/15, MTF: ${mtfScore}/15. Invalidation Stop: $${plannedStopLossPrice}, R:R: ${riskRewardRatio}:1.`;
+      ? `فرصة مؤكدة عبر Trader-Skill (اعتماد 95%): ${symbol} (${targetSide}) بدرجة ثقة ${compositeDecisionScore}%. [مسح وترتيب: ${traderSkillScore.screenerRankScore} | ${smartMoneyTag} | عائد إلى مخاطرة: ${riskRewardRatio}:1]. وقف الخسارة عند $${plannedStopLossPrice} والهدف الأول عند $${tp1Price || plannedTakeProfitPrice}.`
+      : `Verified by Trader-Skill Suite (95% Authority): ${symbol} (${targetSide}) with confidence ${compositeDecisionScore}%. [Screener: ${traderSkillScore.screenerRankScore} | ${smartMoneyTag} | R:R: ${riskRewardRatio}:1]. Protective SL: $${plannedStopLossPrice}, TP1: $${tp1Price || plannedTakeProfitPrice}.`;
 
     return {
       symbol,
       qualified: true,
       signal: targetSide === 'LONG' ? 'BUY_LONG' : 'SELL_SHORT',
-      confidence: totalTradeQualityScore,
+      confidence: compositeDecisionScore,
       rationale,
       regime: indicators.regime,
       plannedStopLossPrice,

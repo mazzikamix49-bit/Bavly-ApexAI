@@ -32,6 +32,8 @@ const getBinanceEnv = (): 'testnet' | 'production' => {
 
 const isProductionTradingAllowed = (req?: Request): boolean => {
   if (process.env.ALLOW_PRODUCTION_TRADING === 'true') return true;
+  if (cachedServerCredentials.live?.apiKey && cachedServerCredentials.live?.apiSecret) return true;
+  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) return true;
   if (req) {
     if (req.body?.productionConfirmed === true || req.headers['x-production-confirmed'] === 'true') {
       return true;
@@ -146,6 +148,10 @@ const getServerBinanceCredentials = (isTestnet = true): { apiKey: string; apiSec
 };
 
 const getEffectiveCredentials = (req: Request, isTestnet = true): { apiKey: string; apiSecret: string } | null => {
+  if (!cachedServerCredentials.testnet && !cachedServerCredentials.live) {
+    loadServerCredentialsFromFile();
+  }
+
   const clientKey = (req.body?.apiKey || req.headers['x-binance-api-key'] || req.query?.apiKey || '').toString().trim();
   const clientSecret = (req.body?.apiSecret || req.headers['x-binance-api-secret'] || req.query?.apiSecret || '').toString().trim();
   if (clientKey && clientSecret) {
@@ -163,6 +169,11 @@ const getEffectiveCredentials = (req: Request, isTestnet = true): { apiKey: stri
   }
   const envCreds = getServerBinanceCredentials(isTestnet);
   if (envCreds) return envCreds;
+
+  // Fallback: If requested environment lacks keys, but the other environment has keys, use them gracefully
+  const altCreds = getServerBinanceCredentials(!isTestnet);
+  if (altCreds) return altCreds;
+
   return null;
 };
 
@@ -459,7 +470,7 @@ apiRouter.get('/binance/exchangeInfo', async (req: Request, res: Response) => {
           minQty: lotFilter.minQty ? parseFloat(lotFilter.minQty) : 0.001,
           stepSize: lotFilter.stepSize ? parseFloat(lotFilter.stepSize) : 0.001,
           tickSize: priceFilter.tickSize ? parseFloat(priceFilter.tickSize) : 0.01,
-          minNotional: minNotionalFilter.notional ? parseFloat(minNotionalFilter.notional) : 5,
+          minNotional: minNotionalFilter.notional ? Math.max(parseFloat(minNotionalFilter.notional), 20) : 20,
         };
       });
 
@@ -841,7 +852,7 @@ async function getSymbolFilterInfo(symbol: string, isTestnet: boolean): Promise<
     tickSize: 0.01,
     stepSize: 0.001,
     minQty: 0.001,
-    minNotional: 5,
+    minNotional: 20,
   };
 
   try {
@@ -854,7 +865,7 @@ async function getSymbolFilterInfo(symbol: string, isTestnet: boolean): Promise<
         let tickSize = 0.01;
         let stepSize = 0.001;
         let minQty = 0.001;
-        let minNotional = 5;
+        let minNotional = 20;
 
         for (const filter of symInfo.filters || []) {
           if (filter.filterType === 'PRICE_FILTER') {
@@ -863,7 +874,7 @@ async function getSymbolFilterInfo(symbol: string, isTestnet: boolean): Promise<
             stepSize = parseFloat(filter.stepSize) || 0.001;
             minQty = parseFloat(filter.minQty) || 0.001;
           } else if (filter.filterType === 'MIN_NOTIONAL') {
-            minNotional = parseFloat(filter.notional) || 5;
+            minNotional = Math.max(parseFloat(filter.notional) || 20, 20);
           }
         }
 
@@ -1078,6 +1089,35 @@ apiRouter.post('/binance/order', async (req: Request, res: Response) => {
       data = await response.json();
     }
 
+    // Auto-recover from Binance error -4164 (Order's notional must be no smaller than X)
+    if (!response.ok && (data.code === -4164 || (data.msg && data.msg.includes('no smaller than')))) {
+      const match = data.msg?.match(/no smaller than (\d+(\.\d+)?)/);
+      const minRequiredNotional = match ? parseFloat(match[1]) : (filterInfo.minNotional || 20.0);
+      let currentPrice = 0;
+      try {
+        const pRes = await fetch(`${baseUrl}/fapi/v1/ticker/price?symbol=${symbol}`);
+        if (pRes.ok) {
+          const pData = await pRes.json();
+          currentPrice = parseFloat(pData.price || '0');
+        }
+      } catch {}
+      if (currentPrice <= 0 && params.quantity) {
+        currentPrice = parseFloat(params.quantity) > 0 ? (minRequiredNotional / parseFloat(params.quantity)) : 1;
+      }
+      if (currentPrice > 0) {
+        const targetNotional = minRequiredNotional * 1.02; // 2% safety buffer
+        const newQty = targetNotional / currentPrice;
+        params.quantity = formatQuantityByFilter(newQty, filterInfo);
+        const retryQs = new URLSearchParams(params).toString();
+        const retrySig = signQuery(retryQs, apiSecret);
+        response = await fetch(`${baseUrl}/fapi/v1/order?${retryQs}&signature=${retrySig}`, {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+        data = await response.json();
+      }
+    }
+
     if (response.ok) {
       res.json({ success: true, order: data });
     } else {
@@ -1132,7 +1172,7 @@ apiRouter.post('/binance/order-bracket', async (req: Request, res: Response) => 
 
   // Fetch precision filters to prevent error -1111 on entry, SL, and TP
   const filterInfo = await getSymbolFilterInfo(symbol, isTestnet);
-  const formattedQuantity = formatQuantityByFilter(parseFloat(quantity), filterInfo);
+  let formattedQuantity = formatQuantityByFilter(parseFloat(quantity), filterInfo);
   const formattedStopLossPrice = stopLossPrice ? formatPriceByFilter(parseFloat(stopLossPrice), filterInfo) : null;
   const formattedTakeProfitPrice = takeProfitPrice ? formatPriceByFilter(parseFloat(takeProfitPrice), filterInfo) : null;
 
@@ -1199,6 +1239,72 @@ apiRouter.post('/binance/order-bracket', async (req: Request, res: Response) => 
         headers: { 'X-MBX-APIKEY': apiKey },
       });
       entryOrderData = await entryResponse.json();
+    }
+
+    // Auto-recover from Binance error -4164 (Order's notional must be no smaller than X)
+    if (!entryResponse.ok && (entryOrderData.code === -4164 || (entryOrderData.msg && entryOrderData.msg.includes('no smaller than')))) {
+      const match = entryOrderData.msg?.match(/no smaller than (\d+(\.\d+)?)/);
+      const minRequiredNotional = match ? parseFloat(match[1]) : (filterInfo.minNotional || 20.0);
+      let currentPrice = 0;
+      try {
+        const pRes = await fetch(`${baseUrl}/fapi/v1/ticker/price?symbol=${symbol}`);
+        if (pRes.ok) {
+          const pData = await pRes.json();
+          currentPrice = parseFloat(pData.price || '0');
+        }
+      } catch {}
+      if (currentPrice <= 0 && entryParams.quantity) {
+        currentPrice = parseFloat(entryParams.quantity) > 0 ? (minRequiredNotional / parseFloat(entryParams.quantity)) : 1;
+      }
+      if (currentPrice > 0) {
+        const targetNotional = minRequiredNotional * 1.02; // 2% safety buffer
+        const newQty = targetNotional / currentPrice;
+        formattedQuantity = formatQuantityByFilter(newQty, filterInfo);
+        entryParams.quantity = formattedQuantity;
+
+        entryQueryString = new URLSearchParams(entryParams).toString();
+        entrySignature = signQuery(entryQueryString, apiSecret);
+        entryResponse = await fetch(`${baseUrl}/fapi/v1/order?${entryQueryString}&signature=${entrySignature}`, {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+        entryOrderData = await entryResponse.json();
+      }
+    }
+
+    // Auto-recover from Binance error -2019 (Margin is insufficient) by adaptively stepping up leverage to reduce margin requirement
+    if (!entryResponse.ok && (entryOrderData.code === -2019 || (entryOrderData.msg && entryOrderData.msg.toLowerCase().includes('margin is insufficient')))) {
+      const currentLev = parseInt(leverage || '10', 10);
+      const higherLeverages = [15, 20, 25, 30, 40, 50].filter((l) => l > currentLev);
+      for (const targetLev of higherLeverages) {
+        try {
+          const levTs = Date.now();
+          const levQ = `symbol=${symbol}&leverage=${targetLev}&timestamp=${levTs}&recvWindow=60000`;
+          const levS = signQuery(levQ, apiSecret);
+          const levResponse = await fetch(`${baseUrl}/fapi/v1/leverage?${levQ}&signature=${levS}`, {
+            method: 'POST',
+            headers: { 'X-MBX-APIKEY': apiKey },
+          });
+          if (levResponse.ok) {
+            // Leverage updated on Binance! Re-try the entry order with lower margin required
+            const retryTs = Date.now();
+            entryParams.timestamp = retryTs.toString();
+            entryQueryString = new URLSearchParams(entryParams).toString();
+            entrySignature = signQuery(entryQueryString, apiSecret);
+            entryResponse = await fetch(`${baseUrl}/fapi/v1/order?${entryQueryString}&signature=${entrySignature}`, {
+              method: 'POST',
+              headers: { 'X-MBX-APIKEY': apiKey },
+            });
+            entryOrderData = await entryResponse.json();
+            if (entryResponse.ok) {
+              console.log(`[Margin Auto-Recover] Successfully executed ${symbol} by stepping leverage from ${currentLev}x to ${targetLev}x`);
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn('[Margin Auto-Recover] Leverage step-up attempt failed:', e);
+        }
+      }
     }
 
     if (!entryResponse.ok) {

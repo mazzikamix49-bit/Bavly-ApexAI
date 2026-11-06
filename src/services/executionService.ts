@@ -9,6 +9,7 @@ import {
 } from '../types/trading';
 import { BinanceService } from './binanceService';
 import { RiskManagementService } from './riskManagementService';
+import { TraderSkillMasterEngine } from './traderSkillEngine';
 
 export interface ExecutionRequest {
   symbol: string;
@@ -67,6 +68,10 @@ export class ExecutionService {
       const entryPrice = symbolInfo.price;
       const totalEquity = balance.totalMarginBalance || balance.totalWalletBalance || 0;
 
+      const freeMargin = balance.availableBalance !== undefined && balance.availableBalance !== null
+        ? balance.availableBalance
+        : totalEquity;
+
       // 1. Mandatory Risk-Based Sizing
       const sizing = RiskManagementService.calculatePositionSize(
         totalEquity,
@@ -74,7 +79,8 @@ export class ExecutionService {
         plannedStopLossPrice,
         symbolInfo,
         settings,
-        req.customLeverage
+        req.customLeverage,
+        freeMargin
       );
 
       if (!sizing.allowed) {
@@ -86,7 +92,30 @@ export class ExecutionService {
         };
       }
 
-      // 2. Mandatory Risk Validation Gatekeeper
+      // 2. Pre-Trade Risk Gatekeeper (Trader-Skill 11 Modules Pack - 95% Authority)
+      const traderSkillRisk = TraderSkillMasterEngine.verifyPreTrade(
+        symbol,
+        req.side,
+        sizing.marginRequiredUsd,
+        entryPrice,
+        plannedStopLossPrice,
+        plannedTakeProfitPrice,
+        balance,
+        openPositions,
+        settings
+      );
+
+      if (traderSkillRisk.verdict === 'BLOCK' && !req.overrideLimits) {
+        const primaryReason = traderSkillRisk.reasons[0] || 'Order blocked by Trader-Skill Risk Gatekeeper.';
+        return {
+          success: false,
+          rejectionReason: `[Trader-Skill Risk Gate] ${primaryReason}`,
+          error: primaryReason,
+          isRealOrder: isRealMode,
+        };
+      }
+
+      // 3. Mandatory Risk Validation Gatekeeper
       const riskCheck = RiskManagementService.validateOrderRisk(
         symbol,
         req.side,
@@ -154,9 +183,16 @@ export class ExecutionService {
         });
 
         if (!bracketResult.success || !bracketResult.order) {
+          const rawErr = bracketResult.error || 'Binance order submission rejected.';
+          const isMarginErr = rawErr.toLowerCase().includes('margin is insufficient');
+          const localizedMsg = isMarginErr
+            ? `الهامش الحر المتاح حالياً ($${(balance.availableBalance ?? 0).toFixed(2)}) غير كافٍ لفتح صفقة جديدة، لأن السيولة محجوزة بالكامل في صفقاتك المفتوحة حالياً. ستتمكن من فتح صفقات جديدة بمجرد إغلاق إحدى الصفقات الرابحة وتحرير هامشها.`
+            : rawErr;
+
           return {
             success: false,
-            error: bracketResult.error || 'Binance order submission rejected.',
+            error: localizedMsg,
+            rejectionReason: localizedMsg,
             isRealOrder: true,
           };
         }

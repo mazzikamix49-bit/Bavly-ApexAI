@@ -246,7 +246,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       minAiConfidence: minConfidence,
       aiDynamicTargets: true,
       multiTargetTrailing,
-      unlimitedHoldTime: !scalpingMode && unlimitedHoldTime,
+      unlimitedHoldTime: scalpingMode ? (scalpingDurationMinutes === 0) : unlimitedHoldTime,
       scalpingMode,
       scalpingDurationMinutes,
       scalpingProfitLockPercent,
@@ -524,70 +524,152 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   </div>
 
                   {scalpingMode && (
-                    <div className="pt-2 border-t border-slate-800/80 space-y-3">
-                      {/* Target Profit % Selector */}
-                      <div>
-                        <div className="flex justify-between items-center mb-1.5">
-                          <span className="text-[11px] text-slate-200 font-bold">
-                            {isArabic ? '🎯 هدف حصد الربح السريع ("أنتش واجري"): ' : '🎯 Hit & Run Profit Target ROI:'}
+                    <div className="pt-2 border-t border-slate-800/80 space-y-4">
+                      {/* Target Profit % Selector & Custom Input */}
+                      <div className="bg-slate-950/70 p-3 rounded-xl border border-amber-500/20">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-[11px] text-slate-200 font-bold flex items-center gap-1.5">
+                            <span>🎯 {isArabic ? 'هدف حصد الربح السريع ("أنتش واجري"):' : 'Hit & Run Profit Target ROI:'}</span>
                           </span>
-                          <span className="font-mono font-bold text-amber-400 text-xs">
+                          <span className="font-mono font-bold text-amber-400 text-xs px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">
                             +{scalpingProfitLockPercent}% ROI
                           </span>
                         </div>
-                        <div className="grid grid-cols-5 gap-1.5 font-mono text-[11px]">
-                          {[15, 20, 25, 35, 50].map((pct) => (
+
+                        {/* Presets Grid */}
+                        <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 font-mono text-[11px] mb-2">
+                          {[10, 15, 20, 25, 30, 35, 50, 75].map((pct) => (
                             <button
                               key={pct}
                               type="button"
                               onClick={() => setScalpingProfitLockPercent(pct)}
-                              className={`py-1 rounded-lg border text-center transition ${
+                              className={`py-1.5 rounded-lg border text-center transition ${
                                 scalpingProfitLockPercent === pct
-                                  ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-sm'
-                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                                  ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-md shadow-amber-500/20'
+                                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
                               }`}
                             >
                               +{pct}%
                             </button>
                           ))}
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-1">
+
+                        {/* Direct Custom ROI % Input */}
+                        <div className="flex items-center gap-2 pt-1 border-t border-slate-800/60">
+                          <label className="text-[10px] text-slate-400 whitespace-nowrap">
+                            {isArabic ? 'أو اكتب النسبة المخصصة يدويًا:' : 'Or enter custom target %:'}
+                          </label>
+                          <div className="relative flex-1">
+                            <input
+                              type="number"
+                              min="5"
+                              max="1000"
+                              step="1"
+                              value={scalpingProfitLockPercent}
+                              onChange={(e) => setScalpingProfitLockPercent(Math.max(5, Math.min(1000, Number(e.target.value) || 25)))}
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono font-bold text-amber-400 focus:outline-none focus:border-amber-400"
+                              placeholder="مثال: 35"
+                            />
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-mono text-slate-500 pointer-events-none">
+                              % ROI
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="text-[10px] text-slate-400 mt-2 leading-relaxed">
                           {isArabic
-                            ? 'بمجرد وصول أي صفقة لهذه النسبة (أو أكثر)، يتم حجز الربح فوراً وإغلاقها وتحرير رأس المال.'
-                            : 'Once a trade reaches this ROI (or higher), profit is locked immediately into wallet.'}
+                            ? '💡 بمجرد وصول أي صفقة لهذه النسبة (أو أعلى)، يقوم المحرك فوراً بإغلاقها بالكامل وحصد الأرباح إلى المحفظة بدون انتظار.'
+                            : '💡 As soon as a trade reaches this ROI (or higher), the engine immediately cashes out into wallet.'}
                         </div>
                       </div>
 
-                      {/* Scalp Duration Limit */}
-                      <div>
-                        <div className="flex justify-between items-center mb-1.5">
-                          <span className="text-[11px] text-slate-200 font-bold">
-                            {isArabic ? '⏱️ أقصى وقت للمركز الرابح (حصد وتدوير):' : '⏱️ Max Duration for Winning Trade:'}
+                      {/* Scalp Duration Limit & Unlimited Options */}
+                      <div className="bg-slate-950/70 p-3 rounded-xl border border-blue-500/20">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-[11px] text-slate-200 font-bold flex items-center gap-1.5">
+                            <span>⏱️ {isArabic ? 'أقصى وقت للمركز الرابح (حصد وتدوير السيولة):' : 'Max Duration for Winning Trade:'}</span>
                           </span>
-                          <span className="font-mono font-bold text-white text-xs">
-                            {scalpingDurationMinutes} {isArabic ? 'دقيقة' : 'min'}
+                          <span className={`font-mono font-bold text-xs px-2 py-0.5 rounded border ${
+                            scalpingDurationMinutes === 0
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                          }`}>
+                            {scalpingDurationMinutes === 0
+                              ? (isArabic ? '♾️ مفتوح (Unlimited)' : '♾️ Unlimited')
+                              : `${scalpingDurationMinutes} ${isArabic ? 'دقيقة' : 'min'}`}
                           </span>
                         </div>
-                        <div className="grid grid-cols-4 gap-1.5 font-mono text-[11px]">
-                          {[15, 20, 30, 45].map((mins) => (
+
+                        {/* Presets Grid */}
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 font-mono text-[11px] mb-2">
+                          {[
+                            { value: 15, label: isArabic ? '15 دقيقة' : '15m' },
+                            { value: 30, label: isArabic ? '30 دقيقة' : '30m' },
+                            { value: 45, label: isArabic ? '45 دقيقة' : '45m' },
+                            { value: 60, label: isArabic ? '60 دقيقة' : '60m' },
+                            { value: 90, label: isArabic ? '90 دقيقة' : '90m' },
+                            { value: 0, label: isArabic ? '♾️ مفتوح' : '♾️ Open' },
+                          ].map((item) => (
                             <button
-                              key={mins}
+                              key={item.value}
                               type="button"
-                              onClick={() => setScalpingDurationMinutes(mins)}
-                              className={`py-1 rounded-lg border text-center transition ${
-                                scalpingDurationMinutes === mins
-                                  ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-sm'
-                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                              onClick={() => setScalpingDurationMinutes(item.value)}
+                              className={`py-1.5 rounded-lg border text-center transition ${
+                                scalpingDurationMinutes === item.value
+                                  ? item.value === 0
+                                    ? 'bg-emerald-500 text-black font-bold border-emerald-400 shadow-md shadow-emerald-500/20'
+                                    : 'bg-blue-500 text-white font-bold border-blue-400 shadow-md shadow-blue-500/20'
+                                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
                               }`}
                             >
-                              {mins} {isArabic ? 'دقيقة' : 'm'}
+                              {item.label}
                             </button>
                           ))}
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-1">
-                          {isArabic
-                            ? 'إذا مرت هذه المدة والصفقة رابحة بأي ربح، تُغلق فوراً ويتحول المكسب للمحفظة.'
-                            : 'If this duration elapses while trade is in positive profit, it cashes out immediately.'}
+
+                        {/* Direct Custom Minutes Input */}
+                        <div className="flex items-center gap-2 pt-1 border-t border-slate-800/60">
+                          <label className="text-[10px] text-slate-400 whitespace-nowrap">
+                            {isArabic ? 'أو اكتب الدقائق مخصصة (0 = غير محدد):' : 'Or enter custom minutes (0 = open):'}
+                          </label>
+                          <div className="relative flex-1">
+                            <input
+                              type="number"
+                              min="0"
+                              max="1440"
+                              step="5"
+                              value={scalpingDurationMinutes}
+                              onChange={(e) => setScalpingDurationMinutes(Math.max(0, Math.min(1440, Number(e.target.value) || 0)))}
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono font-bold text-blue-400 focus:outline-none focus:border-blue-400"
+                              placeholder="0 = مفتوح"
+                            />
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-mono text-slate-500 pointer-events-none">
+                              {scalpingDurationMinutes === 0 ? (isArabic ? 'مفتوح' : 'Unlimited') : (isArabic ? 'دقيقة' : 'min')}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Informative Status Card */}
+                        <div className="mt-2.5 p-2 rounded-lg bg-slate-900/80 border border-slate-800 text-[10px] leading-relaxed">
+                          {scalpingDurationMinutes === 0 ? (
+                            <div className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                              <span>🟢</span>
+                              <span>
+                                {isArabic
+                                  ? `وضع مفتوح بدون قيد زمني: الصفقة لن تُغلق بمرور الوقت نهائياً، وستظل مستمرة بحرية حتى تحقق هدف الربح (+${scalpingProfitLockPercent}%) أو تضرب وقف الخسارة الوقائي.`
+                                  : `Unlimited Duration: Trade will NEVER close on elapsed time. It will strictly run until hitting +${scalpingProfitLockPercent}% ROI or stop loss.`}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="text-blue-300 font-medium flex items-center gap-1.5">
+                              <span>⏱️</span>
+                              <span>
+                                {isArabic
+                                  ? `إغلاق وتدوير بعد ${scalpingDurationMinutes} دقيقة: إذا انقضت هذه المدة والصفقة محققة ربحاً، يتم حصد الأرباح وتحرير رأس المال. وإذا وصلت للهدف (+${scalpingProfitLockPercent}%) في أي وقت قبل انتهاء المدة تُغلق فوراً.`
+                                  : `Time Exit after ${scalpingDurationMinutes}m: If trade is in profit at this cutoff, profits are harvested to free capital. Instant exit triggers whenever +${scalpingProfitLockPercent}% target is hit.`}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

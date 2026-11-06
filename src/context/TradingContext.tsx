@@ -16,8 +16,11 @@ import {
   ToastAlert,
   TradeDirection,
   TradingMode,
+  TraderSkillModuleStatus,
+  TraderSkillPreTradeRiskVerdict,
   WalletProfile,
 } from '../types/trading';
+import { TraderSkillMasterEngine } from '../services/traderSkillEngine';
 import { BinanceService } from '../services/binanceService';
 import { binanceWs, WsConnectionStatus, TickerUpdate } from '../services/binanceWsService';
 import { aiEngine } from '../services/aiLearningEngine';
@@ -126,6 +129,9 @@ export interface TradingContextType {
   runReconciliation: (isManual?: boolean) => Promise<void>;
   clearTradeHistory: () => void;
   cleanAllCacheAndReset: () => Promise<void>;
+  traderSkillAuditTrail: TraderSkillPreTradeRiskVerdict[];
+  traderSkillModules: TraderSkillModuleStatus[];
+  refreshTraderSkillAudit: () => void;
   workerStatus?: {
     workerRunning: boolean;
     botRunning: boolean;
@@ -162,7 +168,7 @@ const DEFAULT_SETTINGS: BotSettings = {
   maxTradeDurationHours: 4,
   scalpingMode: false,
   scalpingDurationMinutes: 15,
-  scalpingProfitLockPercent: 25,
+  scalpingProfitLockPercent: 35,
   minAiConfidence: 75,
   maxSpreadPercent: 0.18,
   maxDataAgeSeconds: 20,
@@ -248,6 +254,19 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const workerStatusRef = useRef(workerStatus);
   workerStatusRef.current = workerStatus;
 
+  // Trader-Skill Suite Integration State (11 Modules with 95% Reliance)
+  const [traderSkillAuditTrail, setTraderSkillAuditTrail] = useState<TraderSkillPreTradeRiskVerdict[]>(() =>
+    TraderSkillMasterEngine.getAuditTrail()
+  );
+  const [traderSkillModules, setTraderSkillModules] = useState<TraderSkillModuleStatus[]>(() =>
+    TraderSkillMasterEngine.getModuleStatuses()
+  );
+
+  const refreshTraderSkillAudit = () => {
+    setTraderSkillAuditTrail(TraderSkillMasterEngine.getAuditTrail());
+    setTraderSkillModules(TraderSkillMasterEngine.getModuleStatuses());
+  };
+
   // Authoritative sync from Worker Control API
   const refreshWorkerStatus = async () => {
     try {
@@ -320,7 +339,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     apiSecret: activeWallet.apiSecret || '',
   }));
 
-  const [apiStatus, setApiStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
+  const [apiStatus, setApiStatus] = useState<'disconnected' | 'connected' | 'error'>(() => {
+    return activeWallet.isValidated || Boolean(activeWallet.apiKey && activeWallet.apiSecret)
+      ? 'connected'
+      : 'disconnected';
+  });
   const [apiErrorMessage, setApiErrorMessage] = useState('');
   const [isValidatingApi, setIsValidatingApi] = useState(false);
 
@@ -453,21 +476,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const balance: AccountBalance =
-    tradingMode === 'real' && realBalance.totalWalletBalance > 0
+    tradingMode === 'real' && (realBalance.totalWalletBalance > 0 || realBalance.availableBalance > 0)
       ? {
           ...realBalance,
-          totalUnrealizedProfit:
-            realBalance.totalUnrealizedProfit !== 0
-              ? realBalance.totalUnrealizedProfit
-              : Number(totalPositionsUnrealizedPnl.toFixed(2)),
+          totalUnrealizedProfit: Number(totalPositionsUnrealizedPnl.toFixed(2)),
           totalMarginBalance: Number(
-            (
-              realBalance.totalWalletBalance +
-              (realBalance.totalUnrealizedProfit !== 0
-                ? realBalance.totalUnrealizedProfit
-                : totalPositionsUnrealizedPnl)
-            ).toFixed(2)
+            (realBalance.totalWalletBalance + totalPositionsUnrealizedPnl).toFixed(2)
           ),
+          availableBalance:
+            positions.length > 0 && totalPositionsInitialMargin > 0
+              ? Math.max(0, Number((realBalance.totalWalletBalance - totalPositionsInitialMargin).toFixed(2)))
+              : realBalance.availableBalance,
         }
       : {
           totalWalletBalance: Number(paperBalance.toFixed(2)),
@@ -535,6 +554,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const botStartedAtRef = useRef<number>(Date.now());
   const lastTradeOpenedAtRef = useRef<number>(0);
   const lastTradedSymbolsRef = useRef<Map<string, number>>(new Map());
+  const lastInsufficientMarginToastRef = useRef<number>(0);
+  const lastCandidateAttemptRef = useRef<number>(0);
 
   // Persist state updates
   useEffect(() => {
@@ -985,12 +1006,45 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             };
           });
 
-          // In real/demo execution mode, Binance is the source of truth
           return livePositions;
         });
       }
     }
   };
+
+  // Auto-connect and hydrate live Binance account data on mount and wallet switch
+  useEffect(() => {
+    let isMounted = true;
+    const initializeAccount = async () => {
+      try {
+        const hasCreds = Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret);
+        const serverStatus = await BinanceService.checkServerConfigStatus(credentialsRef.current.isTestnet);
+        const isServerConfigured = credentialsRef.current.isTestnet
+          ? serverStatus.testnetConfigured
+          : serverStatus.prodConfigured;
+
+        if (hasCreds || isServerConfigured || credentialsRef.current.isValidated) {
+          if (isMounted) {
+            setApiStatus('connected');
+            setCredentials((prev) => ({
+              ...prev,
+              isValidated: true,
+              isServerConfigured,
+            }));
+            setTradingMode('real');
+            await refreshAccountData();
+          }
+        }
+      } catch (e) {
+        console.warn('Auto-connect on mount notice:', e);
+      }
+    };
+
+    initializeAccount();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeWalletId, credentials.isTestnet]);
 
   const runReconciliation = async (isManual = false) => {
     const isAr = languageRef.current === 'ar';
@@ -1097,13 +1151,25 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       credentialsRef.current.isTestnet
     );
 
+    refreshTraderSkillAudit();
+
     if (!execResult.success || !execResult.position) {
       const isAr = languageRef.current === 'ar';
-      addToast({
-        type: 'INFO',
-        title: isAr ? '🛡️ محرك المخاطر منع الصفقة' : '🛡️ Order Rejected by Risk Engine',
-        message: execResult.rejectionReason || execResult.error || 'Order rejected by hard limits.',
-      });
+      const errMsg = execResult.rejectionReason || execResult.error || 'Order rejected by hard limits.';
+      const isMarginErr = errMsg.includes('الهامش') || errMsg.toLowerCase().includes('margin');
+      const now = Date.now();
+
+      // Only alert once every 5 minutes for insufficient margin to avoid flooding the user interface
+      if (!isMarginErr || (now - lastInsufficientMarginToastRef.current > 300000)) {
+        if (isMarginErr) {
+          lastInsufficientMarginToastRef.current = now;
+        }
+        addToast({
+          type: 'INFO',
+          title: isAr ? '🛡️ محرك المخاطر منع الصفقة' : '🛡️ Order Rejected by Risk Engine',
+          message: errMsg,
+        });
+      }
       return false;
     }
 
@@ -1825,7 +1891,10 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     let tickCount = 0;
     const interval = setInterval(async () => {
-      tickCount++;
+      // Periodic live balance & positions sync from Binance every 6 seconds (tick runs every 3s)
+      if (tickCount % 2 === 0 && (credentialsRef.current.isValidated || Boolean(credentialsRef.current.apiKey && credentialsRef.current.apiSecret))) {
+        refreshAccountData();
+      }
 
       // Periodic reconciliation check every 24 seconds (real mode only)
       if (tickCount % 6 === 0 && tradingModeRef.current === 'real') {
@@ -1876,32 +1945,38 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             continue;
           }
 
-          // High Profit Harvest & Hit & Run Scalp Lock ("أنتش واجري"):
-          // Immediately harvest any trade that reached user target ROI (default 25%) or 15% in scalping mode,
-          // cashing out gains directly into the wallet and releasing margin rather than freezing capital for hours!
-          const targetProfitThreshold = settingsRef.current.scalpingProfitLockPercent || 25;
-          const isHighProfit = pos.pnlPercentage >= targetProfitThreshold;
-          const isScalpQuickProfit = Boolean(settingsRef.current.scalpingMode) && pos.pnlPercentage >= 15;
+          // Target Profit Harvest ("أنتش واجري"):
+          // Strictly wait until position reaches user configured target (e.g. 35% or settings.scalpingProfitLockPercent).
+          // NEVER close prematurely at 5%, 10% or a few cents!
+          const targetProfitThreshold = settingsRef.current.scalpingProfitLockPercent || 35;
+          const hitTargetRoi = pos.pnlPercentage >= targetProfitThreshold;
 
-          if (isHighProfit || isScalpQuickProfit) {
+          if (hitTargetRoi) {
             toClose.push({ id: pos.id, reason: 'AI_EARLY_PROFIT_TAKE' });
             continue;
           }
 
           // Scalping Mode & Max Duration check
-          // RULE: In Fast Scalping mode, the 15-minute timer ONLY harvests trades that are in PROFIT (take profit and run).
-          // If a trade is in negative/loss territory, NEVER close on time — let Stop Loss and AI risk engine manage it!
-          const effectiveDurationLimitMs = settingsRef.current.scalpingMode
+          // RULE: In Fast Scalping mode, only harvest if trade reached at least 25% ROI (or the user target).
+          // If slightly in profit (+2%, +5%, +10%) or pennies (e.g. 2 cents), DO NOT close prematurely! Let it run!
+          // If scalpingDurationMinutes === 0 (or unlimitedHoldTime), duration is unlimited (no timer exit).
+          const isUnlimitedHold = settingsRef.current.scalpingMode
+            ? (settingsRef.current.scalpingDurationMinutes === 0)
+            : Boolean(settingsRef.current.unlimitedHoldTime);
+
+          const effectiveDurationLimitMs = isUnlimitedHold
+            ? 0
+            : settingsRef.current.scalpingMode
             ? (settingsRef.current.scalpingDurationMinutes || 15) * 60 * 1000
-            : (!settingsRef.current.unlimitedHoldTime ? pos.maxDurationMs : 0);
+            : pos.maxDurationMs;
 
           if (effectiveDurationLimitMs > 0 && Date.now() - pos.openedAt >= effectiveDurationLimitMs) {
             if (settingsRef.current.scalpingMode) {
-              if (pos.pnlPercentage > 0) {
+              if (pos.pnlPercentage >= Math.min(25.0, targetProfitThreshold)) {
                 toClose.push({ id: pos.id, reason: 'AI_EARLY_PROFIT_TAKE' });
                 continue;
               }
-              // Position is at a loss or breakeven; DO NOT close on time timer. Keep protected by Stop Loss.
+              // Trade is slightly positive (+5%, +10%) or negative: DO NOT close on time timer. Keep running towards target!
             } else {
               toClose.push({ id: pos.id, reason: 'TIME_EXPIRED' });
               continue;
@@ -1910,7 +1985,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
           // AI Trade Doctor Analysis & Autonomous Dynamic Actions
           const pair = marketPairsRef.current.find((p) => p.symbol === pos.symbol);
-          const diagnosis = AIPositionManager.diagnosePosition(pos, pair, undefined, isAr ? 'ar' : 'en');
+          const diagnosis = AIPositionManager.diagnosePosition(
+            pos,
+            pair,
+            undefined,
+            isAr ? 'ar' : 'en',
+            targetProfitThreshold
+          );
           pos.aiDiagnosis = diagnosis;
 
           // AI Action 1: Smart Early Cut Loss (إغلاق وقائي مبكر قبل ضرب الوقف الكامل)
@@ -2029,18 +2110,21 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
           // STRICT GRADE A INTELLIGENCE FILTER:
           // 1. Must qualify with an explicit BUY_LONG or SELL_SHORT setup
-          // 2. High confidence (>= settings minAiConfidence, default 75-80%)
-          // 3. Trade quality tier must be EXCELLENT (85-100) or high GOOD (78-84)
-          // 4. Strong risk-to-reward ratio (>= 1.5)
+          // 2. High confidence (>= settings minAiConfidence, default 70-75%)
+          // 3. Trade quality tier must be EXCELLENT (85-100) or GOOD (70-84)
+          // 4. Strong risk-to-reward ratio (>= 1.4)
           const qualityScore = evalRes.qualityBreakdown?.totalScore || evalRes.confidence || 0;
-          const isHighGrade = qualityScore >= 78 && (evalRes.qualityBreakdown?.tier === 'EXCELLENT' || evalRes.qualityBreakdown?.tier === 'GOOD');
+          const userMinConf = settingsRef.current.minAiConfidence || 70;
+          const isHighGrade =
+            qualityScore >= Math.min(userMinConf, 72) &&
+            (evalRes.qualityBreakdown?.tier === 'EXCELLENT' || evalRes.qualityBreakdown?.tier === 'GOOD');
 
           if (
             evalRes.qualified &&
             evalRes.signal !== 'NO_TRADE' &&
-            evalRes.confidence >= settingsRef.current.minAiConfidence &&
+            evalRes.confidence >= userMinConf &&
             isHighGrade &&
-            evalRes.riskRewardRatio >= 1.5
+            evalRes.riskRewardRatio >= 1.4
           ) {
             candidates.push({ pair, evalRes, score: qualityScore });
           }
@@ -2050,12 +2134,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         candidates.sort((a, b) => b.score - a.score);
 
         if (candidates.length > 0) {
-          const topCandidate = candidates[0];
-          const side: TradeDirection = topCandidate.evalRes.signal === 'BUY_LONG' ? 'LONG' : 'SHORT';
-          const success = await openPosition(topCandidate.pair.symbol, side, topCandidate.evalRes.rationale);
-          if (success) {
-            lastTradeOpenedAtRef.current = Date.now();
-            lastTradedSymbolsRef.current.set(topCandidate.pair.symbol, Date.now());
+          const now = Date.now();
+          // If previous candidate order attempt failed (e.g. margin limit reached), back off for 30s before trying again
+          if (now - lastCandidateAttemptRef.current >= 30000) {
+            const topCandidate = candidates[0];
+            const side: TradeDirection = topCandidate.evalRes.signal === 'BUY_LONG' ? 'LONG' : 'SHORT';
+            lastCandidateAttemptRef.current = now;
+            const success = await openPosition(topCandidate.pair.symbol, side, topCandidate.evalRes.rationale);
+            if (success) {
+              lastTradeOpenedAtRef.current = Date.now();
+              lastTradedSymbolsRef.current.set(topCandidate.pair.symbol, Date.now());
+            }
           }
         }
       }
@@ -2139,6 +2228,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         runReconciliation,
         clearTradeHistory,
         cleanAllCacheAndReset,
+        traderSkillAuditTrail,
+        traderSkillModules,
+        refreshTraderSkillAudit,
         workerStatus,
       }}
     >

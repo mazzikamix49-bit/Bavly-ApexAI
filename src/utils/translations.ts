@@ -88,6 +88,7 @@ export const translations = {
 
     // Tabs
     tabDashboard: 'لوحة التحكم',
+    tabTraderSkill: 'محرك Trader-Skill (اعتماد 95%)',
     tabScanner: 'ماسح السوق اللحظي (AI Scanner)',
     tabAILearning: 'محرك التعلم الذاتي (24/7 Training)',
     tabBacktest: 'التجربة العكسية (Backtesting)',
@@ -299,6 +300,7 @@ export const translations = {
 
     // Tabs
     tabDashboard: 'Dashboard',
+    tabTraderSkill: 'Trader-Skill Engine (95% Authority)',
     tabScanner: 'AI Market Scanner',
     tabAILearning: '24/7 Self-Learning',
     tabBacktest: 'Backtesting',

@@ -14,7 +14,8 @@ export class AIPositionManager {
       imbalanceRatio: number;
       spreadPercent: number;
     },
-    language: 'ar' | 'en' = 'ar'
+    language: 'ar' | 'en' = 'ar',
+    targetProfitPercent = 35.0
   ): AIDiagnosis {
     const isLong = position.side === 'LONG';
     const currentPrice = position.markPrice || pair?.price || position.entryPrice;
@@ -111,21 +112,17 @@ export class AIPositionManager {
       reasoningEn = `Oversold condition with deep orderbook support (${recoveryProbability}% recovery score). DCA lowers average entry price for rapid breakeven/profit exit.`;
     }
 
-    // CASE D: High Profit Harvest & Hit-and-Run Scalp Lock (حجز الأرباح الممتازة وتحرير الفلوس)
+    // CASE D: High Profit Harvest ("أنتش واجري" وفق الهدف المحدد بالكامل دون خروج مبكر)
     else if (
       recommendation === 'HOLD' &&
       isWinning &&
-      (
-        pnlPct >= 25.0 || // High profit target reached (e.g. +25%, +40%, +60%, +69%) -> Harvest immediately!
-        (positionAgeMinutes >= 15 && pnlPct >= 6.0) || // Scalp window elapsed with solid profit -> Cash in and rotate!
-        (pnlPct >= 12.0 && recoveryProbability <= 50) // Decent profit with slowing momentum -> Don't give it back!
-      )
+      pnlPct >= Math.max(25.0, targetProfitPercent)
     ) {
       recommendation = 'AI_EARLY_PROFIT_TAKE';
-      labelAr = pnlPct >= 25.0 ? 'اقتناص أرباح ممتازة' : 'سكالبينج: حجز ربح';
-      labelEn = pnlPct >= 25.0 ? 'High Profit Harvest' : 'Scalp Profit Lock';
-      reasoningAr = `الصفقة حققت ربحاً استثنائياً +${pnlPct.toFixed(1)}%. وفق استراتيجية السكالبينج (أنتش واجري)، تم حجز الربح فوراً وتحرير الهامش لفرص جديدة بدلاً من تجميد رأس المال.`;
-      reasoningEn = `Accrued profit (+${pnlPct.toFixed(1)}%). Hit & run scalping rule triggers to lock in gains and release margin for fresh setups.`;
+      labelAr = `اقتناص هدف الربح (+${pnlPct.toFixed(1)}%)`;
+      labelEn = `Target Profit Harvest (+${pnlPct.toFixed(1)}%)`;
+      reasoningAr = `الصفقة حققت هدف الربح المطلوب بالكامل (+${pnlPct.toFixed(1)}%). تم حجز الأرباح فوراً وتحرير الهامش ورأس المال.`;
+      reasoningEn = `Position reached target profit (+${pnlPct.toFixed(1)}%). Cashing out gains immediately to free margin.`;
     }
 
     // Determine Skill 13 Adaptive Health Status:

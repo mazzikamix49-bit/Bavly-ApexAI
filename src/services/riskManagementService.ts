@@ -80,7 +80,8 @@ export class RiskManagementService {
     stopLossPrice: number,
     symbolInfo: FuturesSymbolInfo,
     settings: BotSettings,
-    customLeverage?: number
+    customLeverage?: number,
+    availableBalance?: number
   ): SizingResult {
     // 1. Parameter guards
     if (entryPrice <= 0 || stopLossPrice <= 0) {
@@ -171,7 +172,9 @@ export class RiskManagementService {
     // 3. Derive Raw Order Quantity based on selected Position Sizing Mode:
     // Mode A: 'RISK_PORTFOLIO_DYNAMIC' -> Equity Risk Budget / Stop Distance (scales contracts on tight SLs like 0.05%, 0.08%)
     // Mode B: 'STRICT_FIXED_MARGIN' -> Strictly caps margin at user's configured USD per trade (e.g. $2 USD)
-    const minNotional = symbolInfo.minNotional || 5.0;
+    const minNotional = symbolInfo.symbol === 'BTCUSDT'
+      ? Math.max(symbolInfo.minNotional || 0, 50.0)
+      : Math.max(symbolInfo.minNotional || 0, 20.0);
     const minQty = symbolInfo.minQty || 0.001;
     const precision = symbolInfo.quantityPrecision ?? 3;
     const multiplier = Math.pow(10, precision);
@@ -205,7 +208,7 @@ export class RiskManagementService {
     // If rawQuantity is smaller than minQty, check if minimum contract quantity is safe for the account:
     if (rawQuantity < minQty) {
       const minQtyMargin = (minQty * entryPrice) / lev;
-      const maxAllowedMargin = effectiveCapital < 5 ? effectiveCapital * 0.85 : effectiveCapital * 0.4;
+      const maxAllowedMargin = effectiveCapital < 5 ? effectiveCapital * 0.95 : effectiveCapital * 0.8;
       if (minQtyMargin <= maxAllowedMargin) {
         rawQuantity = minQty;
       } else {
@@ -233,19 +236,25 @@ export class RiskManagementService {
     let finalNotional = Number((finalQuantity * entryPrice).toFixed(2));
     let finalMargin = Number((finalNotional / lev).toFixed(2));
 
-    // Check Binance minimum notional constraint (e.g. $5.00 USDT)
-    if (finalNotional < minNotional) {
-      const neededQty = Number((Math.ceil((minNotional / entryPrice) * multiplier) / multiplier).toFixed(precision));
+    // Check Binance minimum notional constraint (guarantee at least $20.00 USDT, or $50 for BTCUSDT)
+    const effectiveMinNotional = symbolInfo.symbol === 'BTCUSDT'
+      ? Math.max(minNotional, 50.0)
+      : Math.max(minNotional, 20.0);
+
+    if (finalNotional < effectiveMinNotional) {
+      // Add a 2% buffer above minNotional to avoid rounding down below the exchange limit
+      const targetMinNotional = effectiveMinNotional * 1.02;
+      const neededQty = Number((Math.ceil((targetMinNotional / entryPrice) * multiplier) / multiplier).toFixed(precision));
       const neededMargin = Number(((neededQty * entryPrice) / lev).toFixed(2));
-      const maxNotionalMargin = effectiveCapital < 5 ? effectiveCapital * 0.85 : effectiveCapital * 0.5;
-      if (neededMargin <= maxNotionalMargin) {
+      const maxNotionalMargin = effectiveCapital < 5 ? effectiveCapital * 0.95 : effectiveCapital * 0.80;
+      if (neededMargin <= maxNotionalMargin || effectiveCapital < 5) {
         finalQuantity = Math.max(minQty, neededQty);
         finalNotional = Number((finalQuantity * entryPrice).toFixed(2));
         finalMargin = Number((finalNotional / lev).toFixed(2));
       } else {
         return {
           allowed: false,
-          rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (order notional $${finalNotional.toFixed(2)} < minimum $${minNotional} USDT).`,
+          rejectionReason: `Trade rejected: account capital is too small for Binance minimum order constraints (order notional $${finalNotional.toFixed(2)} < minimum $${effectiveMinNotional} USDT).`,
           quantity: finalQuantity,
           notionalValue: finalNotional,
           marginRequiredUsd: finalMargin,
@@ -255,6 +264,32 @@ export class RiskManagementService {
           effectiveLeverage: lev,
         };
       }
+    }
+
+    // Adaptively adjust leverage if free margin is tight so order can execute without -2019 Margin is insufficient
+    let effectiveLev = lev;
+    if (availableBalance !== undefined && availableBalance > 0 && finalMargin > (availableBalance * 0.95)) {
+      const safeAvailable = Math.max(0.1, availableBalance * 0.90);
+      const neededLev = Math.ceil(finalNotional / safeAvailable);
+      if (neededLev > effectiveLev && neededLev <= 50) {
+        effectiveLev = neededLev;
+        finalMargin = Number((finalNotional / effectiveLev).toFixed(2));
+      }
+    }
+
+    // Check that required margin does not exceed available free margin in wallet
+    if (availableBalance !== undefined && availableBalance > 0 && finalMargin > availableBalance) {
+      return {
+        allowed: false,
+        rejectionReason: `الهامش المتاح حالياً في حسابك ($${availableBalance.toFixed(2)}) غير كافٍ لفتح صفقة جديدة (الهامش المطلوب $${finalMargin.toFixed(2)}). يرجى انتظار إغلاق إحدى الصفقات المفتوحة أو زيادة الرصيد.`,
+        quantity: finalQuantity,
+        notionalValue: finalNotional,
+        marginRequiredUsd: finalMargin,
+        riskBudgetUsd,
+        stopDistancePercent,
+        stopDistanceUsd,
+        effectiveLeverage: effectiveLev,
+      };
     }
 
     // Check that required margin does not exceed available capital profile
@@ -268,7 +303,7 @@ export class RiskManagementService {
         riskBudgetUsd,
         stopDistancePercent,
         stopDistanceUsd,
-        effectiveLeverage: lev,
+        effectiveLeverage: effectiveLev,
       };
     }
 

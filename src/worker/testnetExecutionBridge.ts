@@ -366,7 +366,9 @@ export class TestnetExecutionBridge {
     const tickSize = symbolInfo.tickSize && symbolInfo.tickSize > 0 ? symbolInfo.tickSize : 0.01;
     const stepSize = symbolInfo.stepSize && symbolInfo.stepSize > 0 ? symbolInfo.stepSize : 0.001;
     const minQty = symbolInfo.minQty && symbolInfo.minQty > 0 ? symbolInfo.minQty : 0.001;
-    const minNotional = symbolInfo.minNotional && symbolInfo.minNotional > 0 ? symbolInfo.minNotional : 5.0;
+    const minNotional = symbolInfo.symbol === 'BTCUSDT'
+      ? Math.max(symbolInfo.minNotional || 0, 50.0)
+      : Math.max(symbolInfo.minNotional || 0, 20.0);
 
     // Normalize prices
     const normalizedEntryPrice = normalizePrice(req.entryPrice, tickSize);

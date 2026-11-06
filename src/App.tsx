@@ -11,6 +11,7 @@ import { AILearningCenterTab } from './components/AILearningCenterTab';
 import { BacktestingTab } from './components/BacktestingTab';
 import { SocialCopyTradingTab } from './components/SocialCopyTradingTab';
 import { TechnicalSupportTab } from './components/TechnicalSupportTab';
+import { TraderSkillTab } from './components/TraderSkillTab';
 import { SettingsModal } from './components/SettingsModal';
 import { ClosedTradesHistoryModal } from './components/ClosedTradesHistoryModal';
 import { DiagnosticLogsFooter } from './components/DiagnosticLogsFooter';
@@ -21,10 +22,11 @@ import {
   History,
   LayoutDashboard,
   Radar,
+  Sparkles,
   Users,
 } from 'lucide-react';
 
-type ActiveTab = 'dashboard' | 'scanner' | 'learning' | 'backtest' | 'copy' | 'support';
+type ActiveTab = 'dashboard' | 'traderskill' | 'scanner' | 'learning' | 'backtest' | 'copy' | 'support';
 
 const MainAppContent: React.FC = () => {
   const { t, language, closedTrades, toasts, dismissToast, clearAllToasts, settings } = useTrading();
@@ -34,6 +36,7 @@ const MainAppContent: React.FC = () => {
 
   const tabs = [
     { id: 'dashboard', label: t.tabDashboard, icon: LayoutDashboard },
+    { id: 'traderskill', label: t.tabTraderSkill, icon: Sparkles },
     { id: 'scanner', label: t.tabScanner, icon: Radar },
     { id: 'learning', label: t.tabAILearning, icon: Brain },
     { id: 'backtest', label: t.tabBacktest, icon: Activity },
@@ -61,9 +64,9 @@ const MainAppContent: React.FC = () => {
         {/* Real-time Metric Cards (Visible across all tabs for instant visibility) */}
         <MetricCards />
 
-        {/* Tab Navigation Bar */}
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-1 overflow-x-auto gap-2">
-          <div className="flex items-center gap-1 sm:gap-2">
+        {/* Tab Navigation Bar - Responsive Wrap Layout (No Horizontal Scrolling) */}
+        <div className="flex flex-wrap items-center justify-between border-b border-slate-800/80 pb-2.5 gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -72,7 +75,7 @@ const MainAppContent: React.FC = () => {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as ActiveTab)}
-                  className={`flex items-center gap-2 py-2 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold transition whitespace-nowrap ${
+                  className={`flex items-center gap-1.5 sm:gap-2 py-2 px-3 sm:px-3.5 rounded-xl text-xs sm:text-sm font-semibold transition ${
                     isActive
                       ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20 font-bold'
                       : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -88,11 +91,11 @@ const MainAppContent: React.FC = () => {
           {/* Quick Trade History Button */}
           <button
             onClick={() => setIsHistoryOpen(true)}
-            className="flex items-center gap-1.5 py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-white hover:border-slate-700 transition shrink-0"
+            className="flex items-center gap-1.5 py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-white hover:border-slate-700 transition shrink-0 ml-auto sm:ml-0"
           >
             <History className="w-4 h-4 text-amber-400" />
-            <span className="hidden sm:inline">{t.tradeHistoryTitle}</span>
-            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+            <span>{t.tradeHistoryTitle}</span>
+            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-bold">
               {closedTrades.length}
             </span>
           </button>
@@ -116,6 +119,7 @@ const MainAppContent: React.FC = () => {
             </div>
           )}
 
+          {activeTab === 'traderskill' && <TraderSkillTab />}
           {activeTab === 'scanner' && <MarketScannerTab />}
           {activeTab === 'learning' && <AILearningCenterTab />}
           {activeTab === 'backtest' && <BacktestingTab />}
